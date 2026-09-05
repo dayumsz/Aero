@@ -1,1 +1,2169 @@
-print("hello world)
+repeat task.wait() until game:IsLoaded()
+
+local SCRIPT_ID = "DayuiHub_Instance"
+
+if _G[SCRIPT_ID .. "_Running"] then
+	local existingNotify = _G[SCRIPT_ID .. "_Notify"]
+	local existingConfirm = _G[SCRIPT_ID .. "_Confirm"]
+	local existingUnload = _G[SCRIPT_ID .. "_Unload"]
+
+	if existingConfirm then
+	local resolved = false
+	existingConfirm(
+		"Duped Instance",
+		"There’s already a Aero running. Do you want to unload the current one and start a new instance?",
+		function()
+			if resolved then return end
+			resolved = true
+			if existingUnload then
+				pcall(existingUnload)
+			end
+			task.wait(0.3)
+
+			local success, err = pcall(function()
+				loadstring(game:HttpGet("https://raw.githubusercontent.com/dayumsz/Aero/refs/heads/main/Meow"))()
+			end)
+
+			if not success then
+				warn("[Aero] Failed to reload:", err)
+			end
+		end,
+		function()
+			if resolved then return end
+			resolved = true
+		end
+	)
+	elseif existingNotify then
+		pcall(existingNotify, "Warning", "Aero is already running", 4)
+	end
+	return
+end
+
+_G[SCRIPT_ID .. "_Running"] = true
+
+local ClientLoop = task.spawn(function()
+	while true do
+		pcall(function()
+			game:GetService("Players").LocalPlayer.PlayerScripts.ClientActor.ClientManager.Disabled = true
+		end)
+		task.wait()
+	end
+end)
+
+local Meow = loadstring(game:HttpGet("https://raw.githubusercontent.com/dayumsz/MeowGeto/refs/heads/main/Dayui"))()
+local Library = Meow:CreateLib("Aero", "Dark", "saveconfig")
+local Save = Library.SaveManager
+local Cfg = { Name = "saveconfig", Folder = "meow_saves" }
+Save:Load(Cfg.Name)
+pcall(function() Library.ChangeTheme(Save:GetValue("theme", "Dark")) end)
+
+local Services = {
+	Players         = game:GetService("Players"),
+	RunService      = game:GetService("RunService"),
+	TweenService    = game:GetService("TweenService"),
+	InputService    = game:GetService("UserInputService"),
+	CollectionService = game:GetService("CollectionService"),
+	Lighting        = game:GetService("Lighting"),
+	TCS             = game:GetService("TextChatService"),
+}
+local LP = Services.Players.LocalPlayer
+
+local Tabs = {
+	Main      = Library.AddTab("Visuals"),
+	Removals  = Library.AddTab("Removals"),
+	Player    = Library.AddTab("Player"),
+	Combat    = Library.AddTab("Mobs"),
+	Teleports = Library.AddTab("Teleports"),
+	Config    = Library.AddTab("Config"),
+}
+
+local Sec = {
+	Esp  = Tabs.Main:NewSection("Esps"),
+	Rem  = Tabs.Removals:NewSection("Removals"),
+	Move = Tabs.Player:NewSection("Movement"),
+	VMob = Tabs.Combat:NewSection("Void Mob"),
+	VTit = Tabs.Combat:NewSection("Void Titus"),
+	Tp   = Tabs.Teleports:NewSection("Teleports"),
+	Cfg  = Tabs.Config:NewSection("Config"),
+}
+
+local BarCfg = {
+	Width   = 0.2,
+	Gap     = 0.05,
+	SegInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+}
+
+local Rates = {
+	Esp   = 0.08,
+	Chest = 0.1,
+	Mob   = 0.15,
+	Prox  = 0.1,
+}
+
+local Alive = true
+local Conns = {
+	Input        = nil,
+	Esp          = nil,
+	Chest        = nil,
+	Mob          = nil,
+	Prox         = nil,
+	PlayerAdded  = nil,
+	PlayerRemoving = nil,
+}
+local LastTick = {
+	Esp   = 0,
+	Chest = 0,
+	Mob   = 0,
+	Prox  = 0,
+}
+local NoFallPending = nil
+
+local Esp = {
+	On       = false,
+	Color    = Color3.fromRGB(255, 255, 255),
+	Name     = true, Level = true, Guild = true, Dist = true,
+	HP       = true, Box = true, HPBar = true, StomBar = true,
+	WatBar   = true, EthBar = true, PostBar = true,
+	BldBar   = true, ArmBar = true, SanBar = true,
+	MaxDist  = 5000, Size = 1.0,
+	Players  = {}, GuildCache = {},
+}
+
+local ChestEsp = {
+	On      = false, MaxDist = 5000,
+	Data    = {}, Opened = {},
+	AddConn = nil, RemConn = nil,
+}
+
+local MobEsp = {
+	On      = false, MaxDist = 2500,
+	Color   = Color3.fromRGB(0, 255, 0),
+	Hl      = true, Data = {},
+	AddConn = nil, RemConn = nil,
+}
+
+local ProxEsp = {
+	On      = false, MaxDist = 50,
+	Gui     = nil, Frame = nil, List = nil,
+	DC1     = nil, DC2 = nil,
+	RowConns = {},
+}
+
+local Fly = {
+	On      = false, Speed = Save:GetValue("fly_speed", 100),
+	Bind    = Save:GetValue("fly_bind", "F4"),
+	BV      = nil, Conn = nil, Refresh = nil,
+}
+
+local Noclip = {
+	On        = false, Full = false,
+	Bind      = Save:GetValue("noclip_bind", "F4"),
+	Conn      = nil, CharParts = {}, WorldParts = {},
+	CharConn  = nil,
+}
+
+local Rem = {
+	NoFall  = false, NoFog = false, Chat = false,
+	FogOrig = { Start = nil, End = nil, Density = nil },
+	FogSConn = nil, FogEConn = nil, AtmoConn = nil,
+}
+
+local Spectate = {
+	On              = false,
+	Current         = nil,
+	Camera          = workspace.CurrentCamera,
+	ConnectedFrames = {},
+	StreamConn      = nil,
+	SubjectConn     = nil,
+	CharConn        = nil,
+}
+
+local TpState = { Loops = {}, Current = nil }
+
+local PeerVM
+do
+	local Ok, V = pcall(function()
+		local T = Instance.new("Part"); T.Parent = workspace
+		local V2 = gethiddenproperty(T, "NetworkOwnerV3")
+		T:Destroy(); return V2
+	end)
+	if Ok then PeerVM = V end
+end
+
+local VMob = {
+	On      = false, Conn = nil, CharConn = nil,
+	Root    = nil, Hum = nil,
+}
+
+local RayHook  = { On = false, Fn = nil, Base = nil }
+local FallHook = { On = false, Fn = nil }
+
+local function SafeWait(Parent, Name, Timeout)
+	Timeout = Timeout or 30
+	if not Parent then return nil end
+	local C = Parent:FindFirstChild(Name)
+	if C then return C end
+	local Ok, R = pcall(function() return Parent:WaitForChild(Name, Timeout) end)
+	return (Ok and R) or nil
+end
+
+local function StopLoop(Name)
+	TpState.Loops[Name] = false
+end
+
+local function StopAllLoops()
+	for K in pairs(TpState.Loops) do TpState.Loops[K] = false end
+	TpState.Current = nil
+end
+
+local function StartLoop(Name, Pos)
+	StopLoop(Name)
+	TpState.Loops[Name] = true
+	TpState.Current = Name
+	task.spawn(function()
+		while TpState.Loops[Name] do
+			task.wait(0)
+			pcall(function()
+				if LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") then
+					LP.Character.HumanoidRootPart.CFrame = CFrame.new(Pos)
+				end
+			end)
+		end
+	end)
+end
+
+local function UpdateVMobChar(Char)
+	if not Char then VMob.Root = nil; VMob.Hum = nil; return end
+	VMob.Root = SafeWait(Char, "HumanoidRootPart", 5)
+	VMob.Hum  = SafeWait(Char, "Humanoid", 5)
+end
+
+local function StartVMob()
+	if not Alive then return end
+	pcall(function() workspace.FallenPartsDestroyHeight = -10000 end)
+	if VMob.Conn then pcall(function() VMob.Conn:Disconnect() end); VMob.Conn = nil end
+	if not VMob.CharConn then
+		VMob.CharConn = LP.CharacterAdded:Connect(function(Char)
+			task.wait(0.3); UpdateVMobChar(Char)
+		end)
+	end
+	if LP.Character then UpdateVMobChar(LP.Character) end
+	VMob.Conn = Services.RunService.Heartbeat:Connect(function()
+		pcall(function()
+			if not Alive or not VMob.On or not VMob.Root or not VMob.Hum then return end
+			pcall(function() sethiddenproperty(LP, "MaxSimulationRadius", math.huge) end)
+			pcall(function() sethiddenproperty(LP, "SimulationRadius", math.huge) end)
+			local Live = workspace:FindFirstChild("Live")
+			if not Live then return end
+			for _, Child in pairs(Live:GetChildren()) do
+				pcall(function()
+					if Child ~= LP.Character and Child:FindFirstChild("HumanoidRootPart")
+						and not Child:FindFirstChild("InteractPrompt")
+						and not Services.Players:GetPlayerFromCharacter(Child) then
+						local VP = Child.HumanoidRootPart
+						if (VMob.Root.Position - VP.Position).Magnitude <= 500 then
+							pcall(function() sethiddenproperty(VP, "NetworkOwnerV3", PeerVM) end)
+							pcall(function()
+								if isnetworkowner(VP) then
+									VP.AssemblyLinearVelocity = Vector3.new(0, -7500, 0)
+									VP.CFrame = VP.CFrame * CFrame.new(0, -9500, 0)
+								end
+							end)
+						end
+					end
+				end)
+			end
+		end)
+	end)
+end
+
+local function StopVMob()
+	VMob.On = false
+	if VMob.Conn then pcall(function() VMob.Conn:Disconnect() end); VMob.Conn = nil end
+	if VMob.CharConn then pcall(function() VMob.CharConn:Disconnect() end); VMob.CharConn = nil end
+	VMob.Root = nil; VMob.Hum = nil
+end
+
+local function RebuildHooks()
+	if type(hookmetamethod) ~= "function" or type(newcclosure) ~= "function" or type(getnamecallmethod) ~= "function" then
+		return false
+	end
+	if not RayHook.Base then
+		local Cap
+		local Ok = pcall(function()
+			Cap = hookmetamethod(game, "__namecall", newcclosure(function(Self, ...)
+				return Cap(Self, ...)
+			end))
+		end)
+		if not Ok or not Cap then return false end
+		RayHook.Base = Cap
+	end
+	local Ok = pcall(function()
+		hookmetamethod(game, "__namecall", RayHook.Base)
+		RayHook.Fn = nil; FallHook.Fn = nil
+		if RayHook.On then
+			local Old = RayHook.Base
+			RayHook.Fn = newcclosure(function(Self, ...)
+				if Noclip.On and Alive and getnamecallmethod() == "Raycast" then return nil end
+				return Old(Self, ...)
+			end)
+			hookmetamethod(game, "__namecall", RayHook.Fn)
+		end
+		if FallHook.On then
+			local Old = RayHook.On and RayHook.Fn or RayHook.Base
+			FallHook.Fn = newcclosure(function(Self, ...)
+				if not Rem.NoFall or not Alive then return Old(Self, ...) end
+				local M = getnamecallmethod()
+				if M == "FireServer" and typeof(Self) == "Instance" then
+					local A = {...}
+					if type(A[1]) == "number" and type(A[2]) == "boolean" and A[1] > 2 and A[2] == false then return end
+				end
+				return Old(Self, ...)
+			end)
+			hookmetamethod(game, "__namecall", FallHook.Fn)
+		end
+	end)
+	return Ok
+end
+
+local function InstallRayHook()
+	if RayHook.On then return end
+	if type(hookmetamethod) ~= "function" then return end
+	RayHook.On = true
+	if not RebuildHooks() then RayHook.On = false; RebuildHooks() end
+end
+
+local function RemoveRayHook()
+	if not RayHook.On then return end
+	RayHook.On = false; RebuildHooks()
+end
+
+local function InstallFallHook()
+	if FallHook.On then return end
+	if type(hookmetamethod) ~= "function" then return end
+	FallHook.On = true
+	if not RebuildHooks() then FallHook.On = false; RebuildHooks() end
+end
+
+local function RemoveFallHook()
+	if not FallHook.On then return end
+	FallHook.On = false; RebuildHooks()
+end
+
+local function GetLive()
+	local L = workspace:FindFirstChild("Live")
+	if L then return L end
+	local Ok, R = pcall(function() return workspace:WaitForChild("Live", 30) end)
+	return (Ok and R) or nil
+end
+
+local function GetRoot(Char)
+	if not Char then return nil end
+	return Char:FindFirstChild("HumanoidRootPart") or Char:FindFirstChild("Head")
+end
+
+local function SafeRatio(V)
+	if not V then return 1 end
+	local Ok1, Min = pcall(function() return V.MinValue end)
+	local Ok2, Max = pcall(function() return V.MaxValue end)
+	Min = (Ok1 and type(Min) == "number") and Min or 0
+	Max = (Ok2 and type(Max) == "number") and Max or 100
+	local Ok3, Cur = pcall(function() return V.Value end)
+	if not Ok3 or type(Cur) ~= "number" then Cur = 0 end
+	local Range = Max - Min
+	if Range <= 0 then return 1 end
+	return math.clamp((Cur - Min) / Range, 0, 1)
+end
+
+local function FindVal(Char, LC, Name)
+	if Char then local V = Char:FindFirstChild(Name); if V then return V end end
+	if LC   then local V = LC:FindFirstChild(Name);   if V then return V end end
+	return nil
+end
+
+local function MakeSegBar(Parent, Color)
+	local BC = Instance.new("Frame")
+	BC.Size = UDim2.new(1,0,1,0); BC.BackgroundColor3 = Color3.fromRGB(20,20,20)
+	BC.BorderSizePixel = 0; BC.ClipsDescendants = false; BC.Parent = Parent
+	local Sk = Instance.new("UIStroke")
+	Sk.Color = Color3.fromRGB(0,0,0); Sk.Thickness = 1.5
+	Sk.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; Sk.Parent = BC
+	local Segs, Gap, H = {}, 0.01, (1 - 0.01*4)/5
+	for I = 1, 5 do
+		local YP = 1 - (I*H) - ((I-1)*Gap)
+		local SB = Instance.new("Frame")
+		SB.Size = UDim2.new(1,0,H,0); SB.Position = UDim2.new(0,0,YP,0)
+		SB.BackgroundColor3 = Color3.fromRGB(40,40,40); SB.BorderSizePixel = 0
+		SB.ClipsDescendants = true; SB.Parent = BC
+		local FI = Instance.new("Frame")
+		FI.Size = UDim2.new(1,0,1,0); FI.BackgroundColor3 = Color; FI.BorderSizePixel = 0; FI.Parent = SB
+		Segs[I] = {BG = SB, Fill = FI}
+	end
+	return Segs
+end
+
+local function MakeSegBarH(Parent, Color)
+	local BC = Instance.new("Frame")
+	BC.Size = UDim2.new(1,0,1,0); BC.BackgroundColor3 = Color3.fromRGB(20,20,20)
+	BC.BorderSizePixel = 0; BC.ClipsDescendants = false; BC.Parent = Parent
+	local Sk = Instance.new("UIStroke")
+	Sk.Color = Color3.fromRGB(0,0,0); Sk.Thickness = 1.5
+	Sk.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; Sk.Parent = BC
+	local Segs, Gap, W = {}, 0.01, (1 - 0.01*4)/5
+	for I = 1, 5 do
+		local XP = (I-1)*W + (I-1)*Gap
+		local SB = Instance.new("Frame")
+		SB.Size = UDim2.new(W,0,1,0); SB.Position = UDim2.new(XP,0,0,0)
+		SB.BackgroundColor3 = Color3.fromRGB(40,40,40); SB.BorderSizePixel = 0
+		SB.ClipsDescendants = true; SB.Parent = BC
+		local FI = Instance.new("Frame")
+		FI.Size = UDim2.new(1,0,1,0); FI.BackgroundColor3 = Color; FI.BorderSizePixel = 0; FI.Parent = SB
+		Segs[I] = {BG = SB, Fill = FI}
+	end
+	return Segs
+end
+
+local function UpdateSegs(Segs, Ratio, Color)
+	if not Segs then return end
+	for I = 1, 5 do
+		local S = Segs[I]
+		if S and S.Fill then
+			local FR = math.clamp((Ratio - (I-1)/5) / 0.2, 0, 1)
+			S.Fill.BackgroundColor3 = Color
+			pcall(function()
+				Services.TweenService:Create(S.Fill, BarCfg.SegInfo, {
+					Size     = UDim2.new(1,0,FR,0),
+					Position = UDim2.new(0,0,1-FR,0),
+				}):Play()
+			end)
+		end
+	end
+end
+
+local function UpdateSegsH(Segs, Ratio, Color)
+	if not Segs then return end
+	for I = 1, 5 do
+		local S = Segs[I]
+		if S and S.Fill then
+			local FR = math.clamp((Ratio - (I-1)/5) / 0.2, 0, 1)
+			S.Fill.BackgroundColor3 = Color
+			pcall(function()
+				Services.TweenService:Create(S.Fill, BarCfg.SegInfo, {
+					Size     = UDim2.new(FR,0,1,0),
+					Position = UDim2.new(0,0,0,0),
+				}):Play()
+			end)
+		end
+	end
+end
+
+local function MakeBB(Name, Adorn, Offset)
+	local BG = Instance.new("BillboardGui")
+	BG.Name = Name; BG.Adornee = Adorn
+	BG.StudsOffset = Offset or Vector3.new(0,0,0)
+	BG.AlwaysOnTop = true; BG.ResetOnSpawn = false; BG.Parent = Adorn
+	return BG
+end
+
+local function SzLabel(BG, Lbl)
+	BG.Size = UDim2.new(0,200,0,120)
+	Lbl.TextSize = math.clamp(math.floor(13 * Esp.Size + 0.5), 9, 26)
+end
+
+local function SetAllEnabled(PD, En)
+	if not PD then return end
+	for _, K in ipairs({"Bill","BoxBill","BarBill","StomBill","WatBill","EthBill","PostBill","BldBill","ArmBill","SanBill"}) do
+		if PD[K] then pcall(function() PD[K].Enabled = En end) end
+	end
+end
+
+local function DestroyKey(PD, Key)
+	if PD and PD[Key] then
+		pcall(function() PD[Key]:Destroy() end)
+		PD[Key] = nil
+	end
+end
+
+local function RemovePlayerEsp(Player)
+	local PD = Esp.Players[Player]
+	if not PD then return end
+	if PD.CharConn then pcall(function() PD.CharConn:Disconnect() end) end
+	for _, K in ipairs({"Bill","BoxBill","BarBill","StomBill","WatBill","EthBill","PostBill","BldBill","ArmBill","SanBill"}) do
+		DestroyKey(PD, K)
+	end
+	Esp.Players[Player] = nil
+end
+
+local function ClearEsp()
+	for P in pairs(Esp.Players) do RemovePlayerEsp(P) end
+	Esp.Players = {}
+end
+
+local function RecalcBars(Player)
+	local PD = Esp.Players[Player]
+	if not PD then return end
+	local RI, LI = 0, 0
+	local Slots = {
+		{BB = PD.BarBill,  En = Esp.On and Esp.HPBar,  Side = "right"},
+		{BB = PD.StomBill, En = Esp.On and Esp.StomBar, Side = "left"},
+		{BB = PD.WatBill,  En = Esp.On and Esp.WatBar,  Side = "left"},
+		{BB = PD.EthBill,  En = Esp.On and Esp.EthBar,  Side = "right"},
+	}
+	for _, SL in ipairs(Slots) do
+		if SL.En and SL.BB then
+			if SL.Side == "right" then
+				RI = RI + 1
+				SL.BB.StudsOffset = Vector3.new(2.3 + (RI-1)*(BarCfg.Width+BarCfg.Gap), 0, 0)
+			else
+				LI = LI + 1
+				SL.BB.StudsOffset = Vector3.new(-(2.3 + (LI-1)*(BarCfg.Width+BarCfg.Gap)), 0, 0)
+			end
+		end
+	end
+end
+
+local function MakeLabelBill(Player, Char)
+	if Player == LP or not Char or not Char.Parent then return end
+	local Head = Char:FindFirstChild("Head")
+	local Root = Head or Char:FindFirstChild("HumanoidRootPart")
+	if not Root then return end
+	local PD = Esp.Players[Player]
+	if PD and PD.Bill then
+		if PD.Bill.Parent == Root then return end
+		pcall(function() PD.Bill:Destroy() end)
+		PD.Bill = nil; PD.Lbl = nil; PD.LastTxt = nil
+	end
+	local YOff = Head and 2.5 or 3.5
+	local BG = Instance.new("BillboardGui")
+	BG.Name = "PlayerESP"; BG.Adornee = Root
+	BG.StudsOffsetWorldSpace = Vector3.new(0,YOff,0)
+	BG.AlwaysOnTop = true; BG.ResetOnSpawn = false; BG.LightInfluence = 0; BG.Parent = Root
+	local Lbl = Instance.new("TextLabel")
+	Lbl.Size = UDim2.new(1,0,1,0); Lbl.AnchorPoint = Vector2.new(0.5,1)
+	Lbl.Position = UDim2.new(0.5,0,1,0); Lbl.BackgroundTransparency = 1
+	Lbl.TextColor3 = Esp.Color; Lbl.TextStrokeTransparency = 0
+	Lbl.TextStrokeColor3 = Color3.fromRGB(0,0,0)
+	Lbl.Font = Enum.Font.Ubuntu; Lbl.TextScaled = false; Lbl.TextWrapped = false
+	Lbl.Text = ""; Lbl.Parent = BG
+	SzLabel(BG, Lbl)
+	PD = PD or {}
+	PD.Bill = BG; PD.Lbl = Lbl; PD.LastTxt = nil
+	Esp.Players[Player] = PD
+end
+
+local function MakeBoxBill(Player, Char)
+	if Player == LP then return end
+	local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+	if not Root then return end
+	local PD = Esp.Players[Player]
+	if PD and PD.BoxBill then
+		if PD.BoxBill.Parent == Root then return end
+		pcall(function() PD.BoxBill:Destroy() end); PD.BoxBill = nil
+	end
+	local BG = MakeBB("PlayerBoxESP", Root, Vector3.new(0,0,0))
+	BG.ClipsDescendants = false
+	local BF = Instance.new("Frame")
+	BF.Size = UDim2.new(1,0,1,0); BF.BackgroundTransparency = 1; BF.BorderSizePixel = 0; BF.Parent = BG
+	local function MkLine(Sz, Pos)
+		local F = Instance.new("Frame")
+		F.Size = Sz; F.Position = Pos
+		F.BackgroundColor3 = Color3.fromRGB(255,255,255); F.BorderSizePixel = 0; F.Parent = BF
+	end
+	MkLine(UDim2.new(1,0,0,1), UDim2.new(0,0,0,0))
+	MkLine(UDim2.new(1,0,0,1), UDim2.new(0,0,1,-1))
+	MkLine(UDim2.new(0,1,1,0), UDim2.new(0,0,0,0))
+	MkLine(UDim2.new(0,1,1,0), UDim2.new(1,-1,0,0))
+	BG.Size = UDim2.new(4,0,6,0)
+	PD = Esp.Players[Player] or {}; PD.BoxBill = BG; Esp.Players[Player] = PD
+end
+
+local function MakeVertBar(Player, Char, FieldName, BillKey, SegsKey, Color, AttrName)
+	if Player == LP then return end
+	local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+	if not Root then return end
+	if AttrName then
+		local Live = workspace:FindFirstChild("Live")
+		local LC = Live and Live:FindFirstChild(Player.Name)
+		if not FindVal(Char, LC, AttrName) then return end
+	end
+	local PD = Esp.Players[Player]
+	if PD and PD[BillKey] then
+		if PD[BillKey].Parent == Root then return end
+		pcall(function() PD[BillKey]:Destroy() end); PD[BillKey] = nil
+	end
+	local BG = MakeBB(FieldName, Root)
+	BG.ClipsDescendants = false; BG.Size = UDim2.new(0.2,0,6,0)
+	local MF = Instance.new("Frame")
+	MF.Size = UDim2.new(1,0,1,0); MF.BackgroundTransparency = 1; MF.BorderSizePixel = 0; MF.Parent = BG
+	local Segs = MakeSegBar(MF, Color)
+	PD = Esp.Players[Player] or {}; PD[BillKey] = BG; PD[SegsKey] = Segs
+	Esp.Players[Player] = PD; RecalcBars(Player)
+end
+
+local function MakeHorizBar(Player, Char, BillKey, SegsKey, Name, Color, SzFn, AttrName)
+	if Player == LP then return end
+	local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+	if not Root then return end
+	if AttrName then
+		local Live = workspace:FindFirstChild("Live")
+		local LC = Live and Live:FindFirstChild(Player.Name)
+		if not FindVal(Char, LC, AttrName) then return end
+	end
+	local PD = Esp.Players[Player]
+	if PD and PD[BillKey] then
+		if PD[BillKey].Parent == Root then return end
+		pcall(function() PD[BillKey]:Destroy() end); PD[BillKey] = nil; PD[SegsKey] = nil
+	end
+	local BG = MakeBB(Name, Root)
+	BG.ClipsDescendants = false
+	local MF = Instance.new("Frame")
+	MF.Size = UDim2.new(1,0,1,0); MF.BackgroundTransparency = 1; MF.BorderSizePixel = 0; MF.Parent = BG
+	local Segs = MakeSegBarH(MF, Color)
+	SzFn(BG)
+	PD = Esp.Players[Player] or {}; PD[BillKey] = BG; PD[SegsKey] = Segs
+	Esp.Players[Player] = PD
+end
+
+local BarSizers = {
+	Post = function(BG) BG.Size = UDim2.new(4,0,0.25,0); BG.StudsOffset = Vector3.new(0,4.25,0) end,
+	Bld  = function(BG) BG.Size = UDim2.new(4,0,0.25,0); BG.StudsOffset = Vector3.new(0,4.75,0) end,
+	Arm  = function(BG) BG.Size = UDim2.new(4,0,0.25,0); BG.StudsOffset = Vector3.new(0,5.25,0) end,
+	San  = function(BG) BG.Size = UDim2.new(4,0,0.25,0); BG.StudsOffset = Vector3.new(0,5.75,0) end,
+}
+
+local function MakeHPBar(P, C)   MakeVertBar(P, C, "PlayerBarESP",     "BarBill",  "BarSegs",  Color3.fromRGB(0,210,0),      nil) end
+local function MakeStomBar(P, C) MakeVertBar(P, C, "PlayerStomachESP", "StomBill", "StomSegs", Color3.fromRGB(210,180,50),   "Stomach") end
+local function MakeWatBar(P, C)  MakeVertBar(P, C, "PlayerWaterESP",   "WatBill",  "WatSegs",  Color3.fromRGB(50,150,255),   "Water") end
+local function MakeEthBar(P, C)  MakeVertBar(P, C, "PlayerEtherESP",   "EthBill",  "EthSegs",  Color3.fromRGB(100,220,255),  "Ether") end
+local function MakePostBar(P, C) MakeHorizBar(P, C, "PostBill", "PostSegs", "PlayerPostureESP", Color3.fromRGB(255,210,0),   BarSizers.Post, "BreakMeter") end
+local function MakeBldBar(P, C)  MakeHorizBar(P, C, "BldBill",  "BldSegs",  "PlayerBloodESP",   Color3.fromRGB(180,0,0),     BarSizers.Bld,  "Blood") end
+local function MakeArmBar(P, C)  MakeHorizBar(P, C, "ArmBill",  "ArmSegs",  "PlayerArmorESP",   Color3.fromRGB(190,200,210), BarSizers.Arm,  "Armor") end
+local function MakeSanBar(P, C)  MakeHorizBar(P, C, "SanBill",  "SanSegs",  "PlayerSanityESP",  Color3.fromRGB(120,0,200),   BarSizers.San,  "Sanity") end
+
+local function WaitChar(Char)
+	for _ = 1, 50 do
+		local HRP = Char:FindFirstChild("HumanoidRootPart")
+		local Head = Char:FindFirstChild("Head")
+		local Hum = Char:FindFirstChildOfClass("Humanoid")
+		if HRP and Head and Hum and HRP.Parent == Char and Head.Parent == Char then return true end
+		task.wait(0.1)
+	end
+	return false
+end
+
+local function ApplyAllEsp(Player, Char)
+	if not Esp.On or Player == LP then return end
+	if not Char or not Char.Parent then return end
+	MakeLabelBill(Player, Char)
+	if Esp.Box     then MakeBoxBill(Player, Char) end
+	if Esp.HPBar   then MakeHPBar(Player, Char) end
+	if Esp.StomBar then MakeStomBar(Player, Char) end
+	if Esp.WatBar  then MakeWatBar(Player, Char) end
+	if Esp.EthBar  then MakeEthBar(Player, Char) end
+	if Esp.PostBar then MakePostBar(Player, Char) end
+	if Esp.BldBar  then MakeBldBar(Player, Char) end
+	if Esp.ArmBar  then MakeArmBar(Player, Char) end
+	if Esp.SanBar  then MakeSanBar(Player, Char) end
+	RecalcBars(Player)
+end
+
+local function SetupPlayerEsp(Player)
+	if Player == LP then return end
+	Esp.Players[Player] = Esp.Players[Player] or {}
+	local PD = Esp.Players[Player]
+	if PD.CharConn then pcall(function() PD.CharConn:Disconnect() end); PD.CharConn = nil end
+	PD.CharConn = Player.CharacterAdded:Connect(function(Char)
+		task.spawn(function()
+			if not Alive or not Esp.On then return end
+			if not WaitChar(Char) then return end
+			if not Alive or not Esp.On or Player.Character ~= Char then return end
+			ApplyAllEsp(Player, Char)
+		end)
+	end)
+	if Player.Character then
+		local Char = Player.Character
+		task.spawn(function()
+			if not Alive or not Esp.On then return end
+			if not WaitChar(Char) then return end
+			if not Alive or not Esp.On or Player.Character ~= Char then return end
+			ApplyAllEsp(Player, Char)
+		end)
+	end
+	pcall(function()
+		Player:GetAttributeChangedSignal("Guild"):Connect(function()
+			Esp.GuildCache[Player] = nil
+		end)
+	end)
+end
+
+local function IsValidMob(Model)
+	if not Model or not Model.Parent then return false end
+	if not Model:IsA("Model") then return false end
+	if not Model:FindFirstChildOfClass("Humanoid") then return false end
+	if Model == LP.Character then return false end
+	if Services.Players:GetPlayerFromCharacter(Model) then return false end
+	if Model:FindFirstChild("InteractPrompt") then return false end
+	local Live = workspace:FindFirstChild("Live")
+	if not Live or Model.Parent ~= Live then return false end
+	return true
+end
+
+local function GetMobRoot(Model)
+	return Model:FindFirstChild("Head") or Model:FindFirstChild("HumanoidRootPart")
+end
+
+local function RemoveMob(Model)
+	local D = MobEsp.Data[Model]
+	if not D then return end
+	if D.Bill then pcall(function() D.Bill:Destroy() end) end
+	if D.HL   then pcall(function() D.HL:Destroy() end) end
+	MobEsp.Data[Model] = nil
+end
+
+local function MakeMobBill(Model)
+	if not IsValidMob(Model) then return end
+	local Root = GetMobRoot(Model)
+	if not Root then return end
+	local D = MobEsp.Data[Model]
+	if D and D.Bill and D.Bill.Parent == Root then return end
+	if D then RemoveMob(Model) end
+	local BG = Instance.new("BillboardGui")
+	BG.Name = "MobESP"; BG.Adornee = Root
+	BG.StudsOffset = Vector3.new(0,2.5,0)
+	BG.AlwaysOnTop = true; BG.ResetOnSpawn = false
+	BG.Size = UDim2.new(0,120,0,60); BG.Parent = Root
+	local Lbl = Instance.new("TextLabel")
+	Lbl.Size = UDim2.new(1.5,0,1.5,0); Lbl.BackgroundTransparency = 1
+	Lbl.TextColor3 = MobEsp.Color; Lbl.TextStrokeTransparency = 0
+	Lbl.TextStrokeColor3 = Color3.fromRGB(0,0,0)
+	Lbl.Font = Enum.Font.Ubuntu; Lbl.TextScaled = false
+	Lbl.TextSize = 12; Lbl.Text = ""; Lbl.Parent = BG
+	local HL = nil
+	if MobEsp.Hl then
+		pcall(function()
+			HL = Instance.new("Highlight")
+			HL.FillColor = MobEsp.Color; HL.OutlineColor = MobEsp.Color
+			HL.FillTransparency = 0.5; HL.OutlineTransparency = 0
+			HL.DepthMode = Enum.HighlightDepthMode.Occluded
+			HL.Adornee = Model; HL.Parent = Model
+		end)
+	end
+	MobEsp.Data[Model] = {
+		Bill    = BG, Lbl = Lbl, HL = HL,
+		LastTxt = "", LastVis = nil,
+		Name    = Model.Name:gsub("^%.", ""):gsub("%d+$", ""),
+		Hum     = Model:FindFirstChildOfClass("Humanoid"),
+	}
+end
+
+local function TryAddMob(Model)
+	if MobEsp.Data[Model] or not IsValidMob(Model) then return end
+	local Root = GetMobRoot(Model)
+	if Root then
+		MakeMobBill(Model)
+	else
+		task.spawn(function()
+			local Deadline = tick() + 30
+			while tick() < Deadline do
+				task.wait(0.2)
+				Root = GetMobRoot(Model)
+				if Root then break end
+			end
+			if not Root or not IsValidMob(Model) or MobEsp.Data[Model] then return end
+			MakeMobBill(Model)
+		end)
+	end
+end
+
+local function ClearMobEsp()
+	for M in pairs(MobEsp.Data) do RemoveMob(M) end
+	MobEsp.Data = {}
+end
+
+local function EnableMobEsp()
+	if not Alive then return end
+	MobEsp.On = true
+	local Live = GetLive()
+	if Live then
+		for _, C in ipairs(Live:GetChildren()) do TryAddMob(C) end
+		if MobEsp.AddConn then MobEsp.AddConn:Disconnect() end
+		if MobEsp.RemConn then MobEsp.RemConn:Disconnect() end
+		MobEsp.AddConn = Live.ChildAdded:Connect(function(C)
+			if MobEsp.On then task.wait(0.15); TryAddMob(C) end
+		end)
+		MobEsp.RemConn = Live.ChildRemoved:Connect(RemoveMob)
+	end
+	if Conns.Mob then Conns.Mob:Disconnect() end
+	Conns.Mob = Services.RunService.Heartbeat:Connect(function()
+		if not Alive or not MobEsp.On then return end
+		local Now = tick()
+		if Now - LastTick.Mob < Rates.Mob then return end
+		LastTick.Mob = Now
+		local MR = LP.Character and GetRoot(LP.Character)
+		if not MR then return end
+		local MP = MR.Position
+		local Cam = workspace.CurrentCamera
+		for Model, D in pairs(MobEsp.Data) do
+			pcall(function()
+				if not IsValidMob(Model) then
+					RemoveMob(Model)
+				else
+					local Root = GetMobRoot(Model)
+					local Hum = D.Hum
+					if not Hum or not Hum.Parent then
+						Hum = Model:FindFirstChildOfClass("Humanoid"); D.Hum = Hum
+					end
+					if Root and Hum and Hum.Health > 0 then
+						local Dist = (MP - Root.Position).Magnitude
+						local Vis = Dist <= MobEsp.MaxDist
+						if Vis then local _, OnSc = Cam:WorldToViewportPoint(Root.Position); Vis = OnSc end
+						if D.LastVis ~= Vis then
+							D.LastVis = Vis
+							if D.Bill then D.Bill.Enabled = Vis end
+							if D.HL   then D.HL.Enabled   = Vis end
+						end
+						if Vis then
+							local NT = string.format("%s\n(%d studs)\n[%d/%d]",
+								D.Name, math.floor(Dist+0.5),
+								math.floor(Hum.Health+0.5), math.floor(Hum.MaxHealth+0.5))
+							if NT ~= D.LastTxt then
+								D.Lbl.Text = NT; D.Lbl.TextColor3 = MobEsp.Color; D.LastTxt = NT
+							end
+						end
+					else
+						if D.LastVis ~= false then
+							D.LastVis = false
+							if D.Bill then D.Bill.Enabled = false end
+							if D.HL   then D.HL.Enabled   = false end
+						end
+					end
+				end
+			end)
+		end
+	end)
+end
+
+local function DisableMobEsp()
+	MobEsp.On = false
+	if Conns.Mob      then Conns.Mob:Disconnect();      Conns.Mob = nil end
+	if MobEsp.AddConn then MobEsp.AddConn:Disconnect(); MobEsp.AddConn = nil end
+	if MobEsp.RemConn then MobEsp.RemConn:Disconnect(); MobEsp.RemConn = nil end
+	ClearMobEsp()
+end
+
+local function ApplyMobColor()
+	for _, D in pairs(MobEsp.Data) do
+		if D.Lbl then D.Lbl.TextColor3 = MobEsp.Color end
+		if D.HL  then pcall(function() D.HL.FillColor = MobEsp.Color; D.HL.OutlineColor = MobEsp.Color end) end
+	end
+end
+
+local function ApplyMobHl()
+	if MobEsp.Hl then
+		for Model, D in pairs(MobEsp.Data) do
+			if not D.HL and IsValidMob(Model) then
+				pcall(function()
+					local HL = Instance.new("Highlight")
+					HL.FillColor = MobEsp.Color; HL.OutlineColor = MobEsp.Color
+					HL.FillTransparency = 0.5; HL.OutlineTransparency = 0
+					HL.DepthMode = Enum.HighlightDepthMode.Occluded
+					HL.Adornee = Model; HL.Parent = Model; D.HL = HL
+				end)
+			end
+		end
+	else
+		for _, D in pairs(MobEsp.Data) do
+			if D.HL then pcall(function() D.HL:Destroy() end); D.HL = nil end
+		end
+	end
+end
+
+local function DisconnectFogConns()
+	if Rem.FogSConn then Rem.FogSConn:Disconnect(); Rem.FogSConn = nil end
+	if Rem.FogEConn then Rem.FogEConn:Disconnect(); Rem.FogEConn = nil end
+	if Rem.AtmoConn then Rem.AtmoConn:Disconnect(); Rem.AtmoConn = nil end
+end
+
+local function EnableNoFog()
+	if not Alive then return end
+	Rem.NoFog = true
+	if Rem.FogOrig.Start == nil then
+		pcall(function() Rem.FogOrig.Start = Services.Lighting.FogStart end)
+		pcall(function() Rem.FogOrig.End   = Services.Lighting.FogEnd   end)
+		local A = Services.Lighting:FindFirstChildOfClass("Atmosphere")
+		if A then pcall(function() Rem.FogOrig.Density = A.Density end) end
+	end
+	pcall(function() Services.Lighting.FogStart = 9e9 end)
+	pcall(function() Services.Lighting.FogEnd   = 9e9 end)
+	local A = Services.Lighting:FindFirstChildOfClass("Atmosphere")
+	if A then pcall(function() A.Density = 0 end) end
+	DisconnectFogConns()
+	pcall(function()
+		Rem.FogSConn = Services.Lighting:GetPropertyChangedSignal("FogStart"):Connect(function()
+			if Rem.NoFog and Alive then pcall(function() Services.Lighting.FogStart = 9e9 end) end
+		end)
+	end)
+	pcall(function()
+		Rem.FogEConn = Services.Lighting:GetPropertyChangedSignal("FogEnd"):Connect(function()
+			if Rem.NoFog and Alive then pcall(function() Services.Lighting.FogEnd = 9e9 end) end
+		end)
+	end)
+	local A2 = Services.Lighting:FindFirstChildOfClass("Atmosphere")
+	if A2 then
+		pcall(function()
+			Rem.AtmoConn = A2:GetPropertyChangedSignal("Density"):Connect(function()
+				if Rem.NoFog and Alive then pcall(function() A2.Density = 0 end) end
+			end)
+		end)
+	end
+end
+
+local function DisableNoFog()
+	Rem.NoFog = false; DisconnectFogConns()
+	if Rem.FogOrig.Start ~= nil then
+		pcall(function() Services.Lighting.FogStart = Rem.FogOrig.Start end)
+		pcall(function() Services.Lighting.FogEnd   = Rem.FogOrig.End   end)
+		local A = Services.Lighting:FindFirstChildOfClass("Atmosphere")
+		if A and Rem.FogOrig.Density ~= nil then pcall(function() A.Density = Rem.FogOrig.Density end) end
+	end
+	Rem.FogOrig = { Start = nil, End = nil, Density = nil }
+end
+
+local function EnableChat()
+	Rem.Chat = true
+	pcall(function()
+		local CWC = Services.TCS.ChatWindowConfiguration
+		if CWC then CWC.Enabled = true end
+	end)
+end
+
+local function DisableChat()
+	Rem.Chat = false
+	pcall(function()
+		local CWC = Services.TCS.ChatWindowConfiguration
+		if CWC then CWC.Enabled = false end
+	end)
+end
+
+local function SpectateRestoreCamera()
+	pcall(function()
+		Spectate.Camera = workspace.CurrentCamera
+		if LP.Character and LP.Character:FindFirstChild("Humanoid") then
+			Spectate.Camera.CameraSubject = LP.Character.Humanoid
+		end
+		pcall(function() LP:RemoveTag("ForcedSubject") end)
+	end)
+end
+
+local function SpectateApplySubject()
+	if not Spectate.Current or not Spectate.On then
+		SpectateRestoreCamera()
+		return
+	end
+	local TargChar = Spectate.Current.Character
+	if not TargChar then
+		SpectateRestoreCamera()
+		return
+	end
+	local Hum = TargChar:FindFirstChild("Humanoid")
+	if not Hum then
+		SpectateRestoreCamera()
+		return
+	end
+	pcall(function()
+		Spectate.Camera = workspace.CurrentCamera
+		Spectate.Camera.CameraSubject = Hum
+		pcall(function() LP:AddTag("ForcedSubject") end)
+	end)
+end
+
+local function SpectateDisconnectInternal()
+	if Spectate.StreamConn then Spectate.StreamConn:Disconnect(); Spectate.StreamConn = nil end
+	if Spectate.SubjectConn then Spectate.SubjectConn:Disconnect(); Spectate.SubjectConn = nil end
+	if Spectate.CharConn then Spectate.CharConn:Disconnect(); Spectate.CharConn = nil end
+end
+
+local function SpectateSetTarget(TargetPlayer)
+	SpectateDisconnectInternal()
+	if not TargetPlayer or not Spectate.On then
+		Spectate.Current = nil
+		SpectateRestoreCamera()
+		return
+	end
+	if TargetPlayer == LP then
+		Spectate.Current = nil
+		SpectateRestoreCamera()
+		return
+	end
+	Spectate.Current = TargetPlayer
+	SpectateApplySubject()
+	Spectate.StreamConn = Services.RunService.Heartbeat:Connect(function()
+		if not Alive or not Spectate.On or not Spectate.Current then return end
+		pcall(function()
+			local TargChar = Spectate.Current.Character
+			if not TargChar then return end
+			local Root = TargChar:FindFirstChild("HumanoidRootPart")
+			if not Root then return end
+			LP:RequestStreamAroundAsync(Root.Position, 0.1)
+		end)
+	end)
+	Spectate.SubjectConn = Services.RunService.RenderStepped:Connect(function()
+		if not Alive or not Spectate.On or not Spectate.Current then return end
+		pcall(function()
+			local TargChar = Spectate.Current.Character
+			if not TargChar then return end
+			local Hum = TargChar:FindFirstChild("Humanoid")
+			if not Hum then return end
+			local Cam = workspace.CurrentCamera
+			if Cam.CameraSubject ~= Hum then
+				Cam.CameraSubject = Hum
+			end
+		end)
+	end)
+	Spectate.CharConn = TargetPlayer.CharacterAdded:Connect(function(NewChar)
+		if not Alive or not Spectate.On or Spectate.Current ~= TargetPlayer then return end
+		task.wait(0.5)
+		if not Alive or not Spectate.On or Spectate.Current ~= TargetPlayer then return end
+		SpectateApplySubject()
+	end)
+end
+
+local function SpectateConnectFrame(Frame)
+	if Spectate.ConnectedFrames[Frame] then return end
+	local PlayerLabel = Frame:FindFirstChild("Player")
+	if not PlayerLabel then return end
+	local Conn = Frame.InputBegan:Connect(function(Input)
+		if not Spectate.On or not Alive then return end
+		if Input.UserInputType ~= Enum.UserInputType.MouseButton1 and Input.UserInputType ~= Enum.UserInputType.Touch then return end
+		local RawText = PlayerLabel.Text
+		local TargetName = RawText:match("^%s*(.-)%s*%(") or RawText:match("^%s*(.-)%s*$")
+		local TargetPlayer = Services.Players:FindFirstChild(TargetName)
+		if TargetPlayer and TargetPlayer ~= LP then
+			if Spectate.Current == TargetPlayer then
+				SpectateSetTarget(nil)
+			else
+				SpectateSetTarget(TargetPlayer)
+			end
+		end
+	end)
+	Spectate.ConnectedFrames[Frame] = Conn
+end
+
+local function SpectateHookScrollingFrame(ScrollingFrame)
+	for _, Child in ipairs(ScrollingFrame:GetChildren()) do
+		local PF = Child:FindFirstChild("PlayerFrame")
+		if PF then SpectateConnectFrame(PF) end
+	end
+	ScrollingFrame.ChildAdded:Connect(function(Child)
+		local PF = Child:FindFirstChild("PlayerFrame")
+		if PF then
+			SpectateConnectFrame(PF)
+		else
+			Child.ChildAdded:Connect(function(Sub)
+				if Sub.Name == "PlayerFrame" then SpectateConnectFrame(Sub) end
+			end)
+		end
+	end)
+end
+
+local function EnableSpectate()
+	if not Alive then return end
+	Spectate.On = true
+	task.spawn(function()
+		local Ok, PG = pcall(function() return LP:WaitForChild("PlayerGui", 30) end)
+		if not Ok or not PG then return end
+		local Ok2, LB = pcall(function() return PG:WaitForChild("LeaderboardGui", 30) end)
+		if not Ok2 or not LB then return end
+		local Ok3, MF = pcall(function() return LB:WaitForChild("MainFrame", 30) end)
+		if not Ok3 or not MF then return end
+		local Ok4, SF = pcall(function() return MF:WaitForChild("ScrollingFrame", 30) end)
+		if not Ok4 or not SF then return end
+		SpectateHookScrollingFrame(SF)
+	end)
+end
+
+local function DisableSpectate()
+	Spectate.On = false
+	SpectateDisconnectInternal()
+	Spectate.Current = nil
+	for Frame, Conn in pairs(Spectate.ConnectedFrames) do
+		pcall(function() Conn:Disconnect() end)
+	end
+	Spectate.ConnectedFrames = {}
+	SpectateRestoreCamera()
+end
+
+local function BuildProxGui()
+	local PG = LP:FindFirstChild("PlayerGui")
+	if not PG then PG = SafeWait(LP, "PlayerGui", 30) end
+	if not PG then return end
+	local T  = (Library.GetTheme and Library:GetTheme()) or {}
+	local BT = Library.BindTheme
+	local SG = Instance.new("ScreenGui")
+	SG.Name = "DayuiProximityESP"; SG.ResetOnSpawn = false
+	SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; SG.Parent = PG
+	local Frame = Instance.new("Frame")
+	Frame.Name = "ProxFrame"; Frame.Size = UDim2.new(0,170,0,22)
+	Frame.BackgroundColor3 = T.Window2 or Color3.fromRGB(0,0,0)
+	Frame.BorderSizePixel = 0; Frame.ClipsDescendants = true; Frame.Parent = SG
+	local SavedPos = Save:GetValue("prox_pos")
+	if type(SavedPos) == "table" and type(SavedPos.X) == "number" then
+		Frame.Position = UDim2.new(0, SavedPos.X, 0, SavedPos.Y)
+	else
+		local VP = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1280, 720)
+		Frame.Position = UDim2.new(0, 20, 0, math.floor(VP.Y*0.5))
+	end
+	local Stroke = Instance.new("UIStroke")
+	Stroke.Color = T.Stroke or Color3.fromRGB(60,60,80); Stroke.Thickness = 1; Stroke.Parent = Frame
+	local Header = Instance.new("Frame")
+	Header.Name = "Header"; Header.Size = UDim2.new(1,0,0,22)
+	Header.BackgroundColor3 = T.Window1 or Color3.fromRGB(15,15,15)
+	Header.BorderSizePixel = 0; Header.ClipsDescendants = true; Header.Parent = Frame
+	local Title = Instance.new("TextLabel")
+	Title.Position = UDim2.fromOffset(4,0); Title.Size = UDim2.new(1,-8,1,0)
+	Title.BackgroundTransparency = 1; Title.Text = "Players"
+	Title.TextColor3 = T.TextPrimary or Color3.fromRGB(255,255,255)
+	Title.Font = Enum.Font.RobotoCondensed; Title.TextSize = 13
+	Title.TextXAlignment = Enum.TextXAlignment.Left
+	Title.TextYAlignment = Enum.TextYAlignment.Center; Title.Parent = Header
+	if BT then
+		pcall(function() BT(Frame,  {BackgroundColor3 = "Window2"}) end)
+		pcall(function() BT(Stroke, {Color            = "Stroke"})  end)
+		pcall(function() BT(Header, {BackgroundColor3 = "Window1"}) end)
+		pcall(function() BT(Title,  {TextColor3       = "TextPrimary"}) end)
+	end
+	local List = Instance.new("Frame")
+	List.Name = "List"; List.Size = UDim2.new(1,0,0,0)
+	List.Position = UDim2.new(0,0,0,22); List.BackgroundTransparency = 1
+	List.BorderSizePixel = 0; List.AutomaticSize = Enum.AutomaticSize.Y; List.Parent = Frame
+	local Layout = Instance.new("UIListLayout")
+	Layout.FillDirection = Enum.FillDirection.Vertical
+	Layout.SortOrder = Enum.SortOrder.LayoutOrder
+	Layout.Padding = UDim.new(0,0); Layout.Parent = List
+	Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		Frame.Size = UDim2.new(0,170,0,22+Layout.AbsoluteContentSize.Y)
+	end)
+	local Dragging, DragStart, StartPos = false, nil, nil
+	ProxEsp.DC1 = Header.InputBegan:Connect(function(Input)
+		if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+			Dragging = true; DragStart = Input.Position; StartPos = Frame.Position
+		end
+	end)
+	ProxEsp.DC2 = Services.InputService.InputChanged:Connect(function(Input)
+		if not Dragging then return end
+		if Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch then
+			local Delta = Input.Position - DragStart
+			local NX = StartPos.X.Offset + Delta.X
+			local NY = StartPos.Y.Offset + Delta.Y
+			Frame.Position = UDim2.new(0,NX,0,NY)
+			pcall(function() Save:SetValue("prox_pos", {X=NX, Y=NY}) end)
+		end
+	end)
+	Services.InputService.InputEnded:Connect(function(Input)
+		if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+			Dragging = false
+		end
+	end)
+	ProxEsp.Gui = SG; ProxEsp.Frame = Frame; ProxEsp.List = List
+end
+
+local function DestroyProxGui()
+	if ProxEsp.DC1 then ProxEsp.DC1:Disconnect(); ProxEsp.DC1 = nil end
+	if ProxEsp.DC2 then ProxEsp.DC2:Disconnect(); ProxEsp.DC2 = nil end
+	for _, Conn in pairs(ProxEsp.RowConns) do pcall(function() Conn:Disconnect() end) end
+	ProxEsp.RowConns = {}
+	if ProxEsp.Gui then pcall(function() ProxEsp.Gui:Destroy() end); ProxEsp.Gui = nil; ProxEsp.Frame = nil; ProxEsp.List = nil end
+end
+
+local function UpdateProxList(Entries)
+	local List = ProxEsp.List
+	if not List then return end
+	local T  = (Library.GetTheme and Library:GetTheme()) or {}
+	local BT = Library.BindTheme
+	local RowColor = T.TextDim or Color3.fromRGB(140,140,145)
+	local Existing = {}
+	for _, Child in ipairs(List:GetChildren()) do
+		if Child:IsA("Frame") then Existing[Child.Name] = Child end
+	end
+	local Seen = {}
+	for I, Entry in ipairs(Entries) do
+		Seen[Entry.Name] = true
+		local Row = Existing[Entry.Name]
+		if not Row then
+			Row = Instance.new("Frame")
+			Row.Name = Entry.Name; Row.Size = UDim2.new(1,0,0,18)
+			Row.BackgroundTransparency = 1; Row.BorderSizePixel = 0
+			Row.LayoutOrder = I; Row.Parent = List
+			local Lbl = Instance.new("TextLabel")
+			Lbl.Size = UDim2.new(1,-8,1,0); Lbl.Position = UDim2.new(0,4,0,0)
+			Lbl.BackgroundTransparency = 1; Lbl.Font = Enum.Font.SourceSans
+			Lbl.TextSize = 12; Lbl.TextColor3 = RowColor
+			Lbl.TextXAlignment = Enum.TextXAlignment.Left
+			Lbl.TextYAlignment = Enum.TextYAlignment.Center; Lbl.Parent = Row
+			if BT then pcall(function() BT(Lbl, {TextColor3 = "TextDim"}) end) end
+			local PlayerName = Entry.Name
+			if ProxEsp.RowConns[PlayerName] then
+				pcall(function() ProxEsp.RowConns[PlayerName]:Disconnect() end)
+			end
+			ProxEsp.RowConns[PlayerName] = Row.InputBegan:Connect(function(Input)
+				if not Spectate.On or not Alive then return end
+				if Input.UserInputType ~= Enum.UserInputType.MouseButton1 and Input.UserInputType ~= Enum.UserInputType.Touch then return end
+				local TargetPlayer = Services.Players:FindFirstChild(PlayerName)
+				if TargetPlayer and TargetPlayer ~= LP then
+					if Spectate.Current == TargetPlayer then
+						SpectateSetTarget(nil)
+					else
+						SpectateSetTarget(TargetPlayer)
+					end
+				end
+			end)
+		end
+		local Lbl = Row:FindFirstChildOfClass("TextLabel")
+		local IsSpectating = Spectate.On and Spectate.Current and Spectate.Current.Name == Entry.Name
+		if Lbl then
+			if IsSpectating then
+				Lbl.Text = string.format("[>] %s  %d studs", Entry.Name, math.floor(Entry.Dist+0.5))
+				Lbl.TextColor3 = Color3.fromRGB(255, 200, 50)
+			else
+				Lbl.Text = string.format("%s  %d studs", Entry.Name, math.floor(Entry.Dist+0.5))
+				Lbl.TextColor3 = RowColor
+			end
+		end
+		Row.LayoutOrder = I
+	end
+	for Name, Row in pairs(Existing) do
+		if not Seen[Name] then
+			if ProxEsp.RowConns[Name] then
+				pcall(function() ProxEsp.RowConns[Name]:Disconnect() end)
+				ProxEsp.RowConns[Name] = nil
+			end
+			Row:Destroy()
+		end
+	end
+end
+
+local function EnableProxEsp()
+	if not Alive then return end
+	ProxEsp.On = true
+	task.spawn(BuildProxGui)
+	if Conns.Prox then Conns.Prox:Disconnect() end
+	Conns.Prox = Services.RunService.Heartbeat:Connect(function()
+		if not Alive or not ProxEsp.On then return end
+		local Now = tick()
+		if Now - LastTick.Prox < Rates.Prox then return end
+		LastTick.Prox = Now
+		local MR = LP.Character and GetRoot(LP.Character)
+		if not MR then return end
+		local MP = MR.Position
+		local Entries = {}
+		for _, P in ipairs(Services.Players:GetPlayers()) do
+			if P ~= LP then
+				local Ch = P.Character
+				if Ch then
+					local RT = Ch:FindFirstChild("HumanoidRootPart") or Ch:FindFirstChild("Head")
+					if RT then
+						local Dist = (MP - RT.Position).Magnitude
+						if Dist <= ProxEsp.MaxDist then
+							Entries[#Entries+1] = {Name = P.Name, Dist = Dist}
+						end
+					end
+				end
+			end
+		end
+		table.sort(Entries, function(A, B) return A.Dist < B.Dist end)
+		UpdateProxList(Entries)
+	end)
+end
+
+local function DisableProxEsp()
+	ProxEsp.On = false
+	if Conns.Prox then Conns.Prox:Disconnect(); Conns.Prox = nil end
+	DestroyProxGui()
+end
+
+local ChestColor = Color3.fromRGB(255,128,192)
+
+local function GetChestPart(Obj)
+	if Obj:IsA("Model")    then return Obj.PrimaryPart or Obj:FindFirstChildWhichIsA("BasePart") end
+	if Obj:IsA("BasePart") then return Obj end
+end
+
+local function RemoveChest(Obj)
+	local D = ChestEsp.Data[Obj]
+	if not D then return end
+	if D.Bill then pcall(function() D.Bill:Destroy() end) end
+	ChestEsp.Data[Obj] = nil
+end
+
+local function MakeChestBill(Obj)
+	if ChestEsp.Opened[Obj] or ChestEsp.Data[Obj] then return end
+	local Part = GetChestPart(Obj)
+	if not Part then return end
+	local BG = Instance.new("BillboardGui")
+	BG.Name = "ChestESP"; BG.Adornee = Part
+	BG.StudsOffset = Vector3.new(0,3,0); BG.AlwaysOnTop = true
+	BG.ResetOnSpawn = false; BG.Size = UDim2.new(0,140,0,50); BG.Parent = Part
+	local Lbl = Instance.new("TextLabel")
+	Lbl.Name = "ChestLabel"; Lbl.Size = UDim2.new(1.5,0,1.5,0)
+	Lbl.BackgroundTransparency = 1; Lbl.TextColor3 = ChestColor
+	Lbl.TextStrokeTransparency = 0; Lbl.TextStrokeColor3 = Color3.fromRGB(0,0,0)
+	Lbl.Font = Enum.Font.Ubuntu; Lbl.TextScaled = false
+	Lbl.TextSize = 12; Lbl.Text = "Loot"; Lbl.Parent = BG
+	ChestEsp.Data[Obj] = {Bill = BG, Lbl = Lbl, Part = Part, LastTxt = ""}
+end
+
+local function TryAddChest(Obj)
+	if not Obj or not Obj:IsA("Model") or Obj.Name ~= "Model" then return end
+	task.defer(function()
+		task.wait(0.1)
+		if Obj and Obj.Parent and not ChestEsp.Opened[Obj] then MakeChestBill(Obj) end
+	end)
+end
+
+local function RunChestLoop()
+	if Conns.Chest then Conns.Chest:Disconnect() end
+	Conns.Chest = Services.RunService.Heartbeat:Connect(function()
+		if not Alive or not ChestEsp.On then return end
+		local Now = tick()
+		if Now - LastTick.Chest < Rates.Chest then return end
+		LastTick.Chest = Now
+		local MR = LP.Character and GetRoot(LP.Character)
+		if not MR then return end
+		local MP  = MR.Position
+		local Cam = workspace.CurrentCamera
+		for Obj, D in pairs(ChestEsp.Data) do
+			pcall(function()
+				if not D.Part or not D.Part.Parent or not Obj.Parent then
+					RemoveChest(Obj)
+				else
+					local Dist = (MP - D.Part.Position).Magnitude
+					if Dist <= 25 then
+						ChestEsp.Opened[Obj] = true; RemoveChest(Obj)
+					elseif Dist > ChestEsp.MaxDist then
+						if D.Bill.Enabled then D.Bill.Enabled = false end
+					else
+						local _, OnSc = Cam:WorldToViewportPoint(D.Part.Position)
+						if D.Bill.Enabled ~= OnSc then D.Bill.Enabled = OnSc end
+						if OnSc then
+							local NT = string.format("Loot\n(%d studs)", math.floor(Dist+0.5))
+							if NT ~= D.LastTxt then D.Lbl.Text = NT; D.LastTxt = NT end
+						end
+					end
+				end
+			end)
+		end
+	end)
+end
+
+local function SetupChestConns(Thrown)
+	if ChestEsp.AddConn then ChestEsp.AddConn:Disconnect() end
+	if ChestEsp.RemConn then ChestEsp.RemConn:Disconnect() end
+	ChestEsp.AddConn = Thrown.ChildAdded:Connect(function(C)
+		if ChestEsp.On then task.wait(0.15); TryAddChest(C) end
+	end)
+	ChestEsp.RemConn = Thrown.ChildRemoved:Connect(RemoveChest)
+end
+
+local function EnableChestEsp()
+	if not Alive then return end
+	ChestEsp.On = true
+	local Thrown = workspace:FindFirstChild("Thrown")
+	if not Thrown then
+		task.spawn(function()
+			local Deadline = tick() + 30
+			while tick() < Deadline do
+				task.wait(0.5)
+				Thrown = workspace:FindFirstChild("Thrown")
+				if Thrown then break end
+			end
+			if not Thrown or not ChestEsp.On then return end
+			for _, C in ipairs(Thrown:GetChildren()) do TryAddChest(C) end
+			SetupChestConns(Thrown); RunChestLoop()
+		end)
+		return
+	end
+	for _, C in ipairs(Thrown:GetChildren()) do TryAddChest(C) end
+	SetupChestConns(Thrown); RunChestLoop()
+end
+
+local function DisableChestEsp()
+	ChestEsp.On = false
+	if Conns.Chest        then Conns.Chest:Disconnect();        Conns.Chest = nil end
+	if ChestEsp.AddConn   then ChestEsp.AddConn:Disconnect();   ChestEsp.AddConn = nil end
+	if ChestEsp.RemConn   then ChestEsp.RemConn:Disconnect();   ChestEsp.RemConn = nil end
+	for Obj in pairs(ChestEsp.Data) do RemoveChest(Obj) end
+	ChestEsp.Data = {}; ChestEsp.Opened = {}
+end
+
+local function UpdateEsp()
+	if not Alive or not Esp.On then return end
+	local Now = tick()
+	if Now - LastTick.Esp < Rates.Esp then return end
+	LastTick.Esp = Now
+	local MyChar = LP.Character
+	local MyRoot = MyChar and GetRoot(MyChar)
+	if not MyRoot then return end
+	local MyPos    = MyRoot.Position
+	local Cam      = workspace.CurrentCamera
+	local MaxDistSq = Esp.MaxDist * Esp.MaxDist
+	local Live     = workspace:FindFirstChild("Live")
+	for Player, PD in pairs(Esp.Players) do
+		if Player ~= LP then
+			pcall(function()
+				local Char = Player.Character
+				if not Char then
+					SetAllEnabled(PD, false)
+				else
+					local Root = Char:FindFirstChild("HumanoidRootPart") or Char:FindFirstChild("Head")
+					local Hum  = Char:FindFirstChildOfClass("Humanoid")
+					if not Root or not Hum then
+						SetAllEnabled(PD, false)
+						if not PD.WaitingChar then
+							PD.WaitingChar = true
+							task.spawn(function()
+								if not WaitChar(Char) then PD.WaitingChar = nil; return end
+								if Alive and Esp.On and Player.Character == Char then ApplyAllEsp(Player, Char) end
+								PD.WaitingChar = nil
+							end)
+						end
+					else
+						PD.WaitingChar = nil
+						local LblRoot = Char:FindFirstChild("Head") or Root
+						if not PD.Bill or PD.Bill.Parent ~= LblRoot then MakeLabelBill(Player, Char); PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.Box     and (not PD.BoxBill  or PD.BoxBill.Parent  ~= Root) then MakeBoxBill(Player, Char);  PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.HPBar   and (not PD.BarBill  or PD.BarBill.Parent  ~= Root) then MakeHPBar(Player, Char);    PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.StomBar and (not PD.StomBill or PD.StomBill.Parent ~= Root) then MakeStomBar(Player, Char);  PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.WatBar  and (not PD.WatBill  or PD.WatBill.Parent  ~= Root) then MakeWatBar(Player, Char);   PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.EthBar  and (not PD.EthBill  or PD.EthBill.Parent  ~= Root) then MakeEthBar(Player, Char);   PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.PostBar and (not PD.PostBill or PD.PostBill.Parent ~= Root) then MakePostBar(Player, Char);  PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.BldBar  and (not PD.BldBill  or PD.BldBill.Parent  ~= Root) then MakeBldBar(Player, Char);   PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.ArmBar  and (not PD.ArmBill  or PD.ArmBill.Parent  ~= Root) then MakeArmBar(Player, Char);   PD = Esp.Players[Player]; if not PD then return end end
+						if Esp.SanBar  and (not PD.SanBill  or PD.SanBill.Parent  ~= Root) then MakeSanBar(Player, Char);   PD = Esp.Players[Player]; if not PD then return end end
+						PD = Esp.Players[Player]
+						if not PD then return end
+						local RPos = Root.Position
+						local DX, DY, DZ = RPos.X-MyPos.X, RPos.Y-MyPos.Y, RPos.Z-MyPos.Z
+						local DistSq = DX*DX + DY*DY + DZ*DZ
+						local Dist   = math.sqrt(DistSq)
+						local Vis    = false
+						if DistSq <= MaxDistSq and Cam then
+							local _, OnSc = Cam:WorldToViewportPoint(RPos); Vis = OnSc
+						end
+						local LC = Live and Live:FindFirstChild(Player.Name)
+						if PD.Bill and PD.Lbl then
+							if not Vis then
+								if PD.Bill.Enabled then PD.Bill.Enabled = false end
+							else
+								if not PD.Bill.Enabled then PD.Bill.Enabled = true end
+								PD.Lbl.TextColor3 = Esp.Color
+								local Parts = {}
+								if Esp.Name  then Parts[#Parts+1] = Player.Name end
+								if Esp.Level then
+									local Lvl; pcall(function() Lvl = Char:GetAttribute("Level") or Player:GetAttribute("Level") end)
+									if Lvl ~= nil then Parts[#Parts+1] = "[Level "..tostring(Lvl).."]" end
+								end
+								if Esp.Guild then
+									local G = Player:GetAttribute("Guild")
+									if typeof(G) == "string" and G ~= "" then Parts[#Parts+1] = "Guild: "..G end
+								end
+								if Esp.Dist then Parts[#Parts+1] = "("..math.floor(Dist+0.5).." studs)" end
+								if Esp.HP   then
+									local HP = 0
+									pcall(function()
+										if Hum.MaxHealth > 0 then HP = math.floor(math.clamp(Hum.Health/Hum.MaxHealth,0,1)*100+0.5) end
+									end)
+									Parts[#Parts+1] = "["..HP.."%]"
+								end
+								local NT = table.concat(Parts, "\n")
+								if NT ~= PD.LastTxt then PD.Lbl.Text = NT; PD.LastTxt = NT end
+							end
+						end
+						if PD.BoxBill then
+							local Should = Esp.Box and Vis
+							if PD.BoxBill.Enabled ~= Should then PD.BoxBill.Enabled = Should end
+						end
+						if PD.BarBill and PD.BarSegs then
+							if not Esp.HPBar or not Vis then
+								if PD.BarBill.Enabled then PD.BarBill.Enabled = false end
+							else
+								if not PD.BarBill.Enabled then PD.BarBill.Enabled = true end
+								pcall(function()
+									if Hum.MaxHealth > 0 then
+										local HR = math.clamp(Hum.Health/Hum.MaxHealth,0,1)
+										if math.abs(HR - (PD.LastHPR or -1)) > 0.005 then
+											PD.LastHPR = HR
+											UpdateSegs(PD.BarSegs, HR, Color3.new(math.clamp(2*(1-HR),0,1), math.clamp(2*HR,0,1), 0))
+										end
+									end
+								end)
+							end
+						end
+						local function UpdateVBar(BillKey, SegsKey, LastKey, ValName, Enabled, HiC, LoC)
+							local Bill = PD[BillKey]; local Segs = PD[SegsKey]
+							if not Bill or not Segs then return end
+							if not Enabled or not Vis then if Bill.Enabled then Bill.Enabled = false end; return end
+							if not Bill.Enabled then Bill.Enabled = true end
+							local Ratio = 1
+							local V = FindVal(Char, LC, ValName)
+							if V then Ratio = SafeRatio(V) end
+							if math.abs(Ratio - (PD[LastKey] or -1)) > 0.005 then
+								PD[LastKey] = Ratio
+								UpdateSegs(Segs, Ratio, Color3.new(
+									LoC.R+(HiC.R-LoC.R)*Ratio, LoC.G+(HiC.G-LoC.G)*Ratio, LoC.B+(HiC.B-LoC.B)*Ratio))
+							end
+						end
+						UpdateVBar("StomBill","StomSegs","LastStomR","Stomach", Esp.StomBar, Color3.fromRGB(210,180,50),  Color3.fromRGB(180,80,20))
+						UpdateVBar("WatBill", "WatSegs", "LastWatR", "Water",   Esp.WatBar,  Color3.fromRGB(50,150,255),  Color3.fromRGB(20,80,200))
+						UpdateVBar("EthBill", "EthSegs", "LastEthR", "Ether",   Esp.EthBar,  Color3.fromRGB(100,220,255), Color3.fromRGB(50,180,230))
+						local function UpdateHBar(BillKey, SegsKey, LastKey, ValName, Enabled, HiC, LoC)
+							local Bill = PD[BillKey]; local Segs = PD[SegsKey]
+							if not Bill or not Segs then return end
+							if not Enabled or not Vis then if Bill.Enabled then Bill.Enabled = false end; return end
+							if not Bill.Enabled then Bill.Enabled = true end
+							local Ratio = 0
+							local V = FindVal(Char, LC, ValName)
+							if V then Ratio = SafeRatio(V) end
+							if math.abs(Ratio - (PD[LastKey] or -1)) > 0.005 then
+								PD[LastKey] = Ratio
+								UpdateSegsH(Segs, Ratio, Color3.new(
+									LoC.R+(HiC.R-LoC.R)*Ratio, LoC.G+(HiC.G-LoC.G)*Ratio, LoC.B+(HiC.B-LoC.B)*Ratio))
+							end
+						end
+						UpdateHBar("PostBill","PostSegs","LastPostR","BreakMeter",Esp.PostBar,Color3.fromRGB(255,210,0),   Color3.fromRGB(190,120,20))
+						UpdateHBar("BldBill", "BldSegs", "LastBldR", "Blood",     Esp.BldBar, Color3.fromRGB(240,80,80),   Color3.fromRGB(120,10,10))
+						UpdateHBar("ArmBill", "ArmSegs", "LastArmR", "Armor",     Esp.ArmBar, Color3.fromRGB(220,228,236), Color3.fromRGB(120,130,140))
+						UpdateHBar("SanBill", "SanSegs", "LastSanR", "Sanity",    Esp.SanBar, Color3.fromRGB(170,90,230),  Color3.fromRGB(90,40,140))
+					end
+				end
+			end)
+		end
+	end
+end
+
+local function EnableEsp()
+	if not Alive then return end
+	Esp.On = true
+	for _, P in ipairs(Services.Players:GetPlayers()) do
+		if P ~= LP then SetupPlayerEsp(P) end
+	end
+	if Conns.PlayerAdded then Conns.PlayerAdded:Disconnect() end
+	Conns.PlayerAdded = Services.Players.PlayerAdded:Connect(function(P)
+		if Alive and Esp.On then SetupPlayerEsp(P) end
+	end)
+	if Conns.PlayerRemoving then Conns.PlayerRemoving:Disconnect() end
+	Conns.PlayerRemoving = Services.Players.PlayerRemoving:Connect(function(P)
+		RemovePlayerEsp(P); Esp.GuildCache[P] = nil
+	end)
+	if Conns.Esp then Conns.Esp:Disconnect() end
+	Conns.Esp = Services.RunService.Heartbeat:Connect(UpdateEsp)
+end
+
+local function DisableEsp()
+	Esp.On = false
+	if Conns.Esp           then Conns.Esp:Disconnect();           Conns.Esp = nil end
+	if Conns.PlayerAdded   then Conns.PlayerAdded:Disconnect();   Conns.PlayerAdded = nil end
+	if Conns.PlayerRemoving then Conns.PlayerRemoving:Disconnect(); Conns.PlayerRemoving = nil end
+	ClearEsp()
+end
+
+local function RefreshEspBars()
+	if not Esp.On then return end
+	for Player, PD in pairs(Esp.Players) do
+		local Char = Player.Character
+		if Char then
+			if not Esp.Box     then DestroyKey(PD, "BoxBill") end
+			if not Esp.HPBar   then DestroyKey(PD, "BarBill");  PD.BarSegs  = nil end
+			if not Esp.StomBar then DestroyKey(PD, "StomBill"); PD.StomSegs = nil end
+			if not Esp.WatBar  then DestroyKey(PD, "WatBill");  PD.WatSegs  = nil end
+			if not Esp.EthBar  then DestroyKey(PD, "EthBill");  PD.EthSegs  = nil end
+			if not Esp.PostBar then DestroyKey(PD, "PostBill"); PD.PostSegs = nil end
+			if not Esp.BldBar  then DestroyKey(PD, "BldBill");  PD.BldSegs  = nil end
+			if not Esp.ArmBar  then DestroyKey(PD, "ArmBill");  PD.ArmSegs  = nil end
+			if not Esp.SanBar  then DestroyKey(PD, "SanBill");  PD.SanSegs  = nil end
+			ApplyAllEsp(Player, Char)
+		end
+	end
+end
+
+local function DisableFly()
+	Fly.On = false
+	if Fly.Refresh then pcall(function() task.cancel(Fly.Refresh) end); Fly.Refresh = nil end
+	if Fly.Conn    then Fly.Conn:Disconnect(); Fly.Conn = nil end
+	if Fly.BV      then pcall(function() Fly.BV:Destroy() end); Fly.BV = nil end
+	local Char = LP.Character
+	if Char then
+		local Hum = Char:FindFirstChildOfClass("Humanoid")
+		if Hum then pcall(function() Hum.PlatformStand = false end) end
+	end
+end
+
+local function CreateFlyBV()
+	local Char = LP.Character; if not Char then return nil end
+	local Root = Char:FindFirstChild("HumanoidRootPart"); if not Root then return nil end
+	if Fly.BV then pcall(function() Fly.BV:Destroy() end); Fly.BV = nil end
+	local BV = Instance.new("BodyVelocity")
+	BV.Name = "DayuiFlyBV"; BV.MaxForce = Vector3.new(1e9,1e9,1e9)
+	BV.Velocity = Vector3.zero; BV.Parent = Root
+	pcall(function() Services.CollectionService:AddTag(BV, "AllowedBM") end)
+	Fly.BV = BV; return BV
+end
+
+local function EnableFly()
+	if not Alive then return end
+	DisableFly(); Fly.On = true
+	local Char = LP.Character; if not Char then return end
+	local Root = Char:FindFirstChild("HumanoidRootPart")
+	local Hum  = Char:FindFirstChildOfClass("Humanoid")
+	if not Root or not Hum then return end
+	pcall(function() Hum.PlatformStand = true end)
+	CreateFlyBV()
+	Fly.Conn = Services.RunService.RenderStepped:Connect(function()
+		if not Alive or not Fly.On then return end
+		if not Fly.BV or not Fly.BV.Parent then CreateFlyBV(); if not Fly.BV then return end end
+		local Cam = workspace.CurrentCamera; if not Cam then return end
+		local Dir = Vector3.zero
+		if Services.InputService:IsKeyDown(Enum.KeyCode.W) then Dir = Dir + Cam.CFrame.LookVector end
+		if Services.InputService:IsKeyDown(Enum.KeyCode.S) then Dir = Dir - Cam.CFrame.LookVector end
+		if Services.InputService:IsKeyDown(Enum.KeyCode.A) then Dir = Dir - Cam.CFrame.RightVector end
+		if Services.InputService:IsKeyDown(Enum.KeyCode.D) then Dir = Dir + Cam.CFrame.RightVector end
+		if Services.InputService:IsKeyDown(Enum.KeyCode.Space) then Dir = Dir + Vector3.new(0,1,0) end
+		if Services.InputService:IsKeyDown(Enum.KeyCode.LeftControl) or Services.InputService:IsKeyDown(Enum.KeyCode.C) then
+			Dir = Dir - Vector3.new(0,1,0)
+		end
+		if Dir.Magnitude > 0 then
+			pcall(function() Fly.BV.Velocity = Dir.Unit * Fly.Speed end)
+		else
+			pcall(function() Fly.BV.Velocity = Vector3.zero end)
+		end
+	end)
+	Fly.Refresh = task.spawn(function()
+		while Alive and Fly.On do task.wait(3); if Alive and Fly.On then CreateFlyBV() end end
+	end)
+end
+
+local function RestoreWorld()
+	for Part, Can in pairs(Noclip.WorldParts) do
+		pcall(function() if Part and Part.Parent then Part.CanCollide = Can end end)
+	end
+	Noclip.WorldParts = {}
+end
+
+local function RestoreNoclip()
+	if Noclip.Conn then Noclip.Conn:Disconnect(); Noclip.Conn = nil end
+	for Part, Can in pairs(Noclip.CharParts) do
+		pcall(function() if Part and Part.Parent then Part.CanCollide = Can end end)
+	end
+	Noclip.CharParts = {}; RestoreWorld()
+end
+
+local function ApplyNoclip()
+	local Char = LP.Character; if not Char then return end
+	for _, Part in ipairs(Char:GetDescendants()) do
+		pcall(function()
+			if Part:IsA("BasePart") then
+				if Noclip.CharParts[Part] == nil then Noclip.CharParts[Part] = Part.CanCollide end
+				Part.CanCollide = false
+			end
+		end)
+	end
+end
+
+local function UpdateWorldNoclip()
+	if not Noclip.On or not Noclip.Full then RestoreWorld(); return end
+	local Char = LP.Character; if not Char then return end
+	local Root = Char:FindFirstChild("HumanoidRootPart"); if not Root then return end
+	local Params = OverlapParams.new()
+	Params.FilterType = Enum.RaycastFilterType.Exclude
+	Params.FilterDescendantsInstances = {Char}
+	local Ok, Nearby = pcall(function() return workspace:GetPartBoundsInRadius(Root.Position, 250, Params) end)
+	if not Ok or not Nearby then return end
+	local Seen = {}
+	for _, Part in ipairs(Nearby) do
+		pcall(function()
+			if Part:IsA("BasePart") then
+				Seen[Part] = true
+				if Noclip.WorldParts[Part] == nil then Noclip.WorldParts[Part] = Part.CanCollide end
+				Part.CanCollide = false
+			end
+		end)
+	end
+	for Part, Can in pairs(Noclip.WorldParts) do
+		if not Seen[Part] then
+			pcall(function() if Part and Part.Parent then Part.CanCollide = Can end end)
+			Noclip.WorldParts[Part] = nil
+		end
+	end
+end
+
+local function EnableNoclip()
+	if not Alive then return end
+	Noclip.On = true; InstallRayHook(); ApplyNoclip()
+	if Noclip.Conn then Noclip.Conn:Disconnect(); Noclip.Conn = nil end
+	Noclip.Conn = Services.RunService.Stepped:Connect(function()
+		if not Alive or not Noclip.On then return end
+		local Char = LP.Character; if not Char then return end
+		for _, Part in ipairs(Char:GetDescendants()) do
+			pcall(function()
+				if Part:IsA("BasePart") then
+					if Noclip.CharParts[Part] == nil then Noclip.CharParts[Part] = Part.CanCollide end
+					Part.CanCollide = false
+				end
+			end)
+		end
+		if Noclip.Full then UpdateWorldNoclip() else RestoreWorld() end
+	end)
+end
+
+local function DisableNoclip()
+	Noclip.On = false; RemoveRayHook(); RestoreNoclip()
+end
+
+local function EnableNoFall()
+	if not Alive then return end
+	if NoFallPending then pcall(function() task.cancel(NoFallPending) end); NoFallPending = nil end
+	NoFallPending = task.spawn(function()
+		local Char = LP.Character
+		if not Char then Char = LP.CharacterAdded:Wait() end
+		if not Alive then return end
+		local HRP = Char:FindFirstChild("HumanoidRootPart")
+		if not HRP then HRP = Char:WaitForChild("HumanoidRootPart", 30) end
+		if not HRP or not Alive then return end
+		task.wait(3)
+		if not Alive then return end
+		Rem.NoFall = true
+		if not FallHook.On then
+			InstallFallHook()
+			if not FallHook.On then Rem.NoFall = false end
+		end
+		NoFallPending = nil
+	end)
+end
+
+local function DisableNoFall()
+	Rem.NoFall = false
+	if NoFallPending then pcall(function() task.cancel(NoFallPending) end); NoFallPending = nil end
+	RemoveFallHook()
+end
+
+local function FullCleanup()
+	Alive = false
+	_G[SCRIPT_ID .. "_Running"] = nil
+	_G[SCRIPT_ID .. "_Notify"] = nil
+	_G[SCRIPT_ID .. "_Confirm"] = nil
+	_G[SCRIPT_ID .. "_Unload"] = nil
+	Noclip.On = false; Fly.On = false; Rem.NoFall = false; Rem.Chat = false
+	pcall(RemoveRayHook)
+	if Conns.Input          then Conns.Input:Disconnect();          Conns.Input = nil end
+	if Noclip.Conn          then Noclip.Conn:Disconnect();          Noclip.Conn = nil end
+	if Fly.Conn             then Fly.Conn:Disconnect();             Fly.Conn = nil end
+	if Conns.Esp            then Conns.Esp:Disconnect();            Conns.Esp = nil end
+	if Noclip.CharConn      then Noclip.CharConn:Disconnect();      Noclip.CharConn = nil end
+	if Conns.PlayerAdded    then Conns.PlayerAdded:Disconnect();    Conns.PlayerAdded = nil end
+	if Conns.PlayerRemoving then Conns.PlayerRemoving:Disconnect(); Conns.PlayerRemoving = nil end
+	if NoFallPending        then pcall(function() task.cancel(NoFallPending) end); NoFallPending = nil end
+	pcall(DisableFly); pcall(DisableNoclip); pcall(DisableNoFall)
+	pcall(DisableNoFog); pcall(DisableMobEsp); pcall(DisableEsp)
+	pcall(DisableChestEsp); pcall(DisableProxEsp); pcall(StopVMob)
+	pcall(DisableSpectate); pcall(StopAllLoops)
+	pcall(function()
+		local CWC = Services.TCS.ChatWindowConfiguration
+		if CWC then CWC.Enabled = false end
+	end)
+	Esp.On = false; ClearEsp()
+	pcall(function() task.cancel(ClientLoop) end)
+end
+
+_G[SCRIPT_ID .. "_Notify"]  = function(Title, Text, Duration) pcall(function() Library.Notify(Title, Text, Duration) end) end
+_G[SCRIPT_ID .. "_Confirm"] = function(Title, Msg, OnConfirm, OnCancel) pcall(function() Library.ConfirmDialog(Title, Msg, OnConfirm, OnCancel) end) end
+_G[SCRIPT_ID .. "_Unload"]  = FullCleanup
+
+Noclip.CharConn = LP.CharacterAdded:Connect(function()
+	if not Alive then return end
+	task.wait(0.3)
+	if not Alive then return end
+	if Fly.On    then EnableFly() end
+	if Noclip.On then ApplyNoclip() end
+end)
+
+local S = {
+	EspOn      = Save:GetValue("esp_enable",        false),
+	Name       = Save:GetValue("esp_name",           true),
+	Level      = Save:GetValue("esp_level",          true),
+	Guild      = Save:GetValue("esp_guild",          true),
+	Dist       = Save:GetValue("esp_distance",       true),
+	HP         = Save:GetValue("esp_health",         true),
+	Box        = Save:GetValue("esp_box",            true),
+	HPBar      = Save:GetValue("esp_healthbar",      true),
+	StomBar    = Save:GetValue("esp_stomachbar",     true),
+	WatBar     = Save:GetValue("esp_waterbar",       true),
+	EthBar     = Save:GetValue("esp_etherbar",       true),
+	PostBar    = Save:GetValue("esp_posturebar",     true),
+	BldBar     = Save:GetValue("esp_bloodbar",       true),
+	ArmBar     = Save:GetValue("esp_armorbar",       true),
+	SanBar     = Save:GetValue("esp_sanitybar",      true),
+	FlyOn      = Save:GetValue("fly_enable",         false),
+	NoclipOn   = Save:GetValue("noclip_enable",      false),
+	FullNoclip = Save:GetValue("fullnoclip_enable",  false),
+	NoFall     = Save:GetValue("nofall_enable",      false),
+	NoFog      = Save:GetValue("nofog_enable",       false),
+	ChatOn     = Save:GetValue("unlockchat_enable",  false),
+	MobOn      = Save:GetValue("mob_esp_enable",     false),
+	MobDist    = Save:GetValue("mob_esp_distance",   2500),
+	MobHl      = Save:GetValue("mob_esp_highlight",  true),
+	ChestOn    = Save:GetValue("chest_esp_enable",   false),
+	ChestDist  = Save:GetValue("chest_esp_distance", 5000),
+	ProxOn     = Save:GetValue("proximity_enable",   false),
+	ProxDist   = Save:GetValue("proximity_distance", 50),
+	SpectateOn = Save:GetValue("spectate_enable",    false),
+}
+
+local function GetSavedColor(Key, R, G, B)
+	local C = Save:GetValue(Key)
+	if type(C) == "table" then return Color3.new(C.R, C.G, C.B) end
+	return Color3.fromRGB(R, G, B)
+end
+
+Esp.Color   = GetSavedColor("esp_color", 255, 255, 255)
+Esp.Name    = S.Name;    Esp.Level   = S.Level;   Esp.Guild  = S.Guild;   Esp.Dist   = S.Dist
+Esp.HP      = S.HP;      Esp.Box     = S.Box;      Esp.HPBar  = S.HPBar;  Esp.StomBar = S.StomBar
+Esp.WatBar  = S.WatBar;  Esp.EthBar  = S.EthBar;  Esp.PostBar = S.PostBar
+Esp.BldBar  = S.BldBar;  Esp.ArmBar  = S.ArmBar;  Esp.SanBar  = S.SanBar
+Esp.MaxDist = Save:GetValue("esp_maxdist", 5000)
+Esp.Size    = Save:GetValue("esp_size", 1)
+Noclip.Full      = S.FullNoclip
+ChestEsp.MaxDist = S.ChestDist
+ProxEsp.MaxDist  = S.ProxDist
+MobEsp.MaxDist   = S.MobDist
+MobEsp.Hl        = S.MobHl
+MobEsp.Color     = GetSavedColor("mob_esp_color", 0, 255, 0)
+
+Sec.Esp:NewOptionGroup("Player ESP", {
+	{name = "Enable",        type = "toggle"},
+	{name = "Name",          type = "toggle"},
+	{name = "Level",         type = "toggle"},
+	{name = "Guild",         type = "toggle"},
+	{name = "Distance",      type = "toggle"},
+	{name = "Health",        type = "toggle"},
+	{name = "Box",           type = "toggle"},
+	{name = "HealthBar",     type = "toggle"},
+	{name = "StomachBar",    type = "toggle"},
+	{name = "WaterBar",      type = "toggle"},
+	{name = "EtherBar",      type = "toggle"},
+	{name = "PostureBar",    type = "toggle"},
+	{name = "BloodBar",      type = "toggle"},
+	{name = "ArmorBar",      type = "toggle"},
+	{name = "SanityBar",     type = "toggle"},
+	{name = "ESP Distance",  type = "slider",  min = 100,  max = 50000, default = Esp.MaxDist},
+	{name = "ESP Size",      type = "sliderf", min = 0.5,  max = 3,     default = Esp.Size, decimals = 1},
+	{name = "ESP Color",     type = "colorpicker", defaultColor = GetSavedColor("esp_color", 255, 255, 255)},
+	{name = "Proximity",     type = "toggle"},
+	{name = "Prox Distance", type = "slider",  min = 1,    max = 5000,  default = ProxEsp.MaxDist},
+	{name = "Player Leaderboard Spectate",      type = "toggle"},
+}, {
+	Enable      = S.EspOn,   Name       = S.Name,    Level      = S.Level,
+	Guild       = S.Guild,   Distance   = S.Dist,    Health     = S.HP,
+	Box         = S.Box,     HealthBar  = S.HPBar,   StomachBar = S.StomBar,
+	WaterBar    = S.WatBar,  EtherBar   = S.EthBar,  PostureBar = S.PostBar,
+	BloodBar    = S.BldBar,  ArmorBar   = S.ArmBar,  SanityBar  = S.SanBar,
+	Proximity   = S.ProxOn,  Spectate   = S.SpectateOn,
+}, function(Opt, State, Val, All)
+	if not Alive then return end
+	if     Opt == "Enable"       then Save:SetValue("esp_enable",     State); if State then EnableEsp() else DisableEsp() end
+	elseif Opt == "Name"         then Esp.Name    = State; Save:SetValue("esp_name",     State)
+	elseif Opt == "Level"        then Esp.Level   = State; Save:SetValue("esp_level",    State)
+	elseif Opt == "Guild"        then Esp.Guild   = State; Save:SetValue("esp_guild",    State)
+	elseif Opt == "Distance"     then Esp.Dist    = State; Save:SetValue("esp_distance", State)
+	elseif Opt == "Health"       then Esp.HP      = State; Save:SetValue("esp_health",   State)
+	elseif Opt == "Box"          then Esp.Box     = State; Save:SetValue("esp_box",      State); RefreshEspBars()
+	elseif Opt == "HealthBar"    then Esp.HPBar   = State; Save:SetValue("esp_healthbar",   State); RefreshEspBars()
+	elseif Opt == "StomachBar"   then Esp.StomBar = State; Save:SetValue("esp_stomachbar",  State); RefreshEspBars()
+	elseif Opt == "WaterBar"     then Esp.WatBar  = State; Save:SetValue("esp_waterbar",    State); RefreshEspBars()
+	elseif Opt == "EtherBar"     then Esp.EthBar  = State; Save:SetValue("esp_etherbar",    State); RefreshEspBars()
+	elseif Opt == "PostureBar"   then Esp.PostBar = State; Save:SetValue("esp_posturebar",  State); RefreshEspBars()
+	elseif Opt == "BloodBar"     then Esp.BldBar  = State; Save:SetValue("esp_bloodbar",    State); RefreshEspBars()
+	elseif Opt == "ArmorBar"     then Esp.ArmBar  = State; Save:SetValue("esp_armorbar",    State); RefreshEspBars()
+	elseif Opt == "SanityBar"    then Esp.SanBar  = State; Save:SetValue("esp_sanitybar",   State); RefreshEspBars()
+	elseif Opt == "ESP Distance" then Esp.MaxDist = Val;   Save:SetValue("esp_maxdist", Val)
+	elseif Opt == "ESP Size"     then
+		Esp.Size = Val; Save:SetValue("esp_size", Val)
+		for _, PD in pairs(Esp.Players) do
+			if PD.Bill and PD.Lbl then SzLabel(PD.Bill, PD.Lbl) end
+		end
+	elseif Opt == "ESP Color" then
+		local C = All and All["ESP Color"] and All["ESP Color"].colorValue
+		if C then Esp.Color = C; Save:SetValue("esp_color", {R=C.R, G=C.G, B=C.B}) end
+	elseif Opt == "Proximity"     then Save:SetValue("proximity_enable",  State); if State then EnableProxEsp() else DisableProxEsp() end
+	elseif Opt == "Prox Distance" then ProxEsp.MaxDist = Val; Save:SetValue("proximity_distance", Val)
+	elseif Opt == "Player Leaderboard Spectate" then Save:SetValue("spectate_enable", State); if State then EnableSpectate() else DisableSpectate() end
+	end
+end)
+
+Sec.Esp:NewOptionGroup("Chest ESP", {
+	{name = "Enable",   type = "toggle"},
+	{name = "Distance", type = "slider", min = 100, max = 10000, default = ChestEsp.MaxDist},
+}, {Enable = S.ChestOn}, function(Opt, State, Val)
+	if not Alive then return end
+	if     Opt == "Enable"   then Save:SetValue("chest_esp_enable",   State); if State then EnableChestEsp() else DisableChestEsp() end
+	elseif Opt == "Distance" then ChestEsp.MaxDist = Val; Save:SetValue("chest_esp_distance", Val)
+	end
+end)
+
+Sec.Rem:NewToggle("No Fall Damage", nil, function(State)
+	if not Alive then return end
+	Save:SetValue("nofall_enable", State)
+	if State then EnableNoFall() else DisableNoFall() end
+end, S.NoFall)
+
+Sec.Rem:NewToggle("No Fog", nil, function(State)
+	if not Alive then return end
+	Save:SetValue("nofog_enable", State)
+	if State then EnableNoFog() else DisableNoFog() end
+end, S.NoFog)
+
+Sec.Rem:NewToggle("No Locked Chat", nil, function(State)
+	if not Alive then return end
+	Save:SetValue("unlockchat_enable", State)
+	if State then EnableChat() else DisableChat() end
+end, S.ChatOn)
+
+Sec.Esp:NewOptionGroup("Mob ESP", {
+	{name = "Enable",       type = "toggle"},
+	{name = "Highlight",    type = "toggle"},
+	{name = "Mob Distance", type = "slider", min = 100, max = 10000, default = MobEsp.MaxDist},
+	{name = "Mob Color",    type = "colorpicker", defaultColor = GetSavedColor("mob_esp_color", 0, 255, 0)},
+}, {Enable = S.MobOn, Highlight = S.MobHl}, function(Opt, State, Val, All)
+	if not Alive then return end
+	if     Opt == "Enable"       then Save:SetValue("mob_esp_enable",    State); if State then EnableMobEsp() else DisableMobEsp() end
+	elseif Opt == "Highlight"    then MobEsp.Hl = State; Save:SetValue("mob_esp_highlight", State); ApplyMobHl()
+	elseif Opt == "Mob Distance" then MobEsp.MaxDist = Val; Save:SetValue("mob_esp_distance", Val)
+	elseif Opt == "Mob Color"    then
+		local C = All and All["Mob Color"] and All["Mob Color"].colorValue
+		if C then MobEsp.Color = C; Save:SetValue("mob_esp_color", {R=C.R, G=C.G, B=C.B}); ApplyMobColor() end
+	end
+end)
+
+local FlyTog = Sec.Move:NewToggle("Fly", nil, function(State)
+	if not Alive then return end
+	Save:SetValue("fly_enable", State)
+	if State then EnableFly() else DisableFly() end
+end, S.FlyOn)
+
+Sec.Move:NewKeybind("Fly Bind", Fly.Bind, function(Key)
+	if not Alive then return end
+	if typeof(Key) == "EnumItem" then Fly.Bind = Key.Name; Save:SetValue("fly_bind", Key.Name) end
+end)
+
+Sec.Move:NewSlider("Fly Speed", 1, 250, Fly.Speed, function(V)
+	if not Alive then return end
+	Fly.Speed = V; Save:SetValue("fly_speed", V)
+end)
+
+local NoclipTog = Sec.Move:NewToggle("Noclip", nil, function(State)
+	if not Alive then return end
+	Save:SetValue("noclip_enable", State)
+	if State then EnableNoclip() else DisableNoclip() end
+end, S.NoclipOn)
+
+Sec.Move:NewToggle("Full Noclip", nil, function(State)
+	if not Alive then return end
+	Save:SetValue("fullnoclip_enable", State)
+	Noclip.Full = State
+	if not State then RestoreWorld() end
+end, S.FullNoclip)
+
+Sec.Move:NewKeybind("Noclip Bind", Noclip.Bind, function(Key)
+	if not Alive then return end
+	if typeof(Key) == "EnumItem" then Noclip.Bind = Key.Name; Save:SetValue("noclip_bind", Key.Name) end
+end)
+
+Sec.VMob:NewToggle("Void Mob", nil, function(State)
+	if not Alive then return end
+	Save:SetValue("voidmob_enable", State)
+	VMob.On = State
+	if State then StartVMob() else StopVMob() end
+end, Save:GetValue("voidmob_enable", false))
+
+if Save:GetValue("voidmob_enable", false) then
+	VMob.On = true; StartVMob()
+end
+
+Sec.VTit:NewButton("Void Titus", "Void Titus", function()
+	local Char = LP.Character; if not Char then return end
+	local Root = Char:FindFirstChild("HumanoidRootPart"); if not Root then return end
+	local Live = workspace:FindFirstChild("Live"); if not Live then return end
+	local Titus
+	for _, V in ipairs(Live:GetChildren()) do
+		if string.find(string.lower(V.Name), "titus") then Titus = V; break end
+	end
+	if not Titus then return end
+	local TR = Titus:FindFirstChild("HumanoidRootPart"); if not TR then return end
+	local WasNoclip = Noclip.On
+	if not Noclip.On then
+		EnableNoclip()
+		if NoclipTog and NoclipTog.Set then pcall(function() NoclipTog:Set(true) end) end
+	end
+	local BH, BR, SV
+	BH = Services.RunService.Heartbeat:Connect(function()
+		pcall(function()
+			local C = LP.Character; if not C then return end
+			local HRP = C:FindFirstChild("HumanoidRootPart"); if not HRP then return end
+			SV = HRP.AssemblyLinearVelocity
+			HRP.AssemblyLinearVelocity = Vector3.new(0,-9e9,0)
+		end)
+	end)
+	BR = Services.RunService.PreRender:Connect(function()
+		if not SV then return end
+		pcall(function()
+			local C = LP.Character; if not C then return end
+			local HRP = C:FindFirstChild("HumanoidRootPart"); if not HRP then return end
+			HRP.AssemblyLinearVelocity = SV
+		end)
+	end)
+	task.wait()
+	local Tween = Services.TweenService:Create(Root, TweenInfo.new(3, Enum.EasingStyle.Linear), {CFrame = TR.CFrame * CFrame.new(0,-1,0)})
+	Tween:Play()
+	task.delay(2.55, function()
+		pcall(function()
+			local VIM = game:GetService("VirtualInputManager")
+			VIM:SendKeyEvent(true,  Enum.KeyCode.W, false, game)
+			task.wait(0.5)
+			VIM:SendKeyEvent(false, Enum.KeyCode.W, false, game)
+		end)
+	end)
+	Tween.Completed:Wait()
+	local T0 = tick()
+	while tick()-T0 < 1.3 do
+		if not TR.Parent then break end
+		pcall(function() Root.CFrame = TR.CFrame * CFrame.new(0,-1,0) end)
+		Services.RunService.Heartbeat:Wait()
+	end
+	if BH then BH:Disconnect(); BH = nil end
+	if BR then BR:Disconnect(); BR = nil end
+	SV = nil
+	if not WasNoclip then
+		DisableNoclip(); Save:SetValue("noclip_enable", false)
+		if NoclipTog and NoclipTog.Set then pcall(function() NoclipTog:Set(false) end) end
+	end
+end, {Confirm = true, ConfirmMessage = "Are you sure you want to void Titus?"})
+
+local PlaceId = game.PlaceId
+
+if PlaceId == 6032399813 then
+	Sec.Tp:NewButton("Eastern Luminant", nil, function()
+		if TpState.Current == "Etrean" then
+			StopLoop("Etrean"); TpState.Current = nil
+		else
+			StopAllLoops(); StartLoop("Etrean", Vector3.new(-2637.456298828125, 631.6329345703125, -6722.51953125))
+		end
+	end)
+	Sec.Tp:NewButton("The Depths", nil, function()
+		StopAllLoops()
+		local Pos = Vector3.new(39911.3672, 39980.9375, 39708.3203)
+		StartLoop("Depths", Pos)
+		LP.CharacterAdded:Connect(function()
+			if TpState.Current == "Depths" then task.wait(1); StartLoop("Depths", Pos) end
+		end)
+	end)
+	Sec.Tp:NewButton("Trial Of One", nil, function()
+		StopAllLoops()
+		local Pos = Vector3.new(-959.7876586914062, 146.99688720703125, -6659.63037109375)
+		StartLoop("TrialOfOne", Pos)
+		LP.CharacterAdded:Connect(function()
+			if TpState.Current == "TrialOfOne" then task.wait(1); StartLoop("TrialOfOne", Pos) end
+		end)
+	end)
+	Sec.Tp:NewButton("Stop Teleport", nil, StopAllLoops)
+elseif PlaceId == 6473861193 then
+	Sec.Tp:NewButton("Etrean Luminant", nil, function()
+		if TpState.Current == "Etrean" then
+			StopLoop("Etrean"); TpState.Current = nil
+		else
+			StopAllLoops(); StartLoop("Etrean", Vector3.new(-514.2630004882812, 615.17431640625, -4772.32080078125))
+		end
+	end)
+	Sec.Tp:NewButton("The Depths", nil, function()
+		StopAllLoops()
+		local Pos = Vector3.new(39911.3672, 39980.9375, 39708.3203)
+		StartLoop("Depths", Pos)
+		LP.CharacterAdded:Connect(function()
+			if TpState.Current == "Depths" then task.wait(1); StartLoop("Depths", Pos) end
+		end)
+	end)
+	Sec.Tp:NewButton("Stop Teleport", nil, StopAllLoops)
+end
+
+Conns.Input = Services.InputService.InputBegan:Connect(function(Input, GP)
+	if not Alive or GP or Input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+	local KN = Input.KeyCode.Name
+	if KN == Fly.Bind then
+		Fly.On = not Fly.On; Save:SetValue("fly_enable", Fly.On)
+		if Fly.On then EnableFly(); if FlyTog    and FlyTog.Set    then pcall(function() FlyTog:Set(true)    end) end
+		else          DisableFly(); if FlyTog    and FlyTog.Set    then pcall(function() FlyTog:Set(false)   end) end end
+	end
+	if KN == Noclip.Bind then
+		Noclip.On = not Noclip.On; Save:SetValue("noclip_enable", Noclip.On)
+		if Noclip.On then EnableNoclip(); if NoclipTog and NoclipTog.Set then pcall(function() NoclipTog:Set(true)  end) end
+		else            DisableNoclip(); if NoclipTog and NoclipTog.Set then pcall(function() NoclipTog:Set(false) end) end end
+	end
+end)
+
+if S.EspOn      then EnableEsp() end
+if S.FlyOn      then EnableFly() end
+if S.NoclipOn   then EnableNoclip() end
+if S.NoFall     then EnableNoFall() end
+if S.NoFog      then EnableNoFog() end
+if S.ChatOn     then EnableChat() end
+if S.MobOn      then EnableMobEsp() end
+if S.ChestOn    then EnableChestEsp() end
+if S.ProxOn     then EnableProxEsp() end
+if S.SpectateOn then EnableSpectate() end
+
+local ThemeNames  = Library:GetThemes()
+local SavedTheme  = Save:GetValue("theme", "Dark")
+local ThemeDefault = table.find(ThemeNames, SavedTheme) and SavedTheme or ThemeNames[1]
+
+local ThemeDrop = Sec.Cfg:NewDropdown("Theme", ThemeNames, ThemeDefault, function(Opt)
+	Save:SetValue("theme", Opt); pcall(function() Library.ChangeTheme(Opt) end)
+end)
+
+Sec.Cfg:NewButton("Create Custom Theme", nil, function()
+	pcall(function()
+		Library:OpenThemeEditor(function(Name)
+			if not Name then return end
+			pcall(function() ThemeDrop:Update(Library:GetThemes(), Name) end)
+			Save:SetValue("theme", Name); pcall(function() Library.ChangeTheme(Name) end)
+		end)
+	end)
+end)
+
+Sec.Cfg:NewButton("Save Config", nil, function()
+	if not Alive then return end
+	pcall(function() Save:Save(Cfg.Name) end)
+end)
+
+Sec.Cfg:NewButton("Delete Config", nil, function()
+	if not Alive then return end
+	pcall(function() delfile(Cfg.Folder .. "/" .. Cfg.Name .. ".json") end)
+	pcall(function() Save:Clear() end)
+	DisableEsp(); DisableChestEsp(); DisableProxEsp()
+	DisableFly(); DisableNoclip(); DisableNoFall()
+	DisableNoFog(); DisableChat(); DisableMobEsp()
+	DisableSpectate(); StopVMob(); StopAllLoops()
+end, {Confirm = true, ConfirmMessage = "Are you sure you want to delete this Config?"})
+
+Library.OnClose(FullCleanup)
+
+task.defer(function()
+	local Parent = (gethui and gethui()) or game:GetService("CoreGui")
+	local function Hook(Gui)
+		if not Gui or not Gui:IsA("ScreenGui") then return end
+		if string.find(Gui.Name, "Meow_") then
+			pcall(function() Gui.Destroying:Connect(FullCleanup) end)
+			return true
+		end
+	end
+	for _, Gui in ipairs(Parent:GetChildren()) do if Hook(Gui) then break end end
+	Parent.ChildAdded:Connect(function(Child)
+		task.defer(function() pcall(function() Hook(Child) end) end)
+	end)
+end)
